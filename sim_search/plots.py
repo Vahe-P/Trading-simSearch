@@ -1,7 +1,7 @@
 import pandas as pd
 from lightweight_charts import AbstractChart, JupyterChart
 
-from market_search.models import Window
+from sim_search.models import Window
 
 
 def create_chart_impl(chart: AbstractChart, window: Window, show_projection: bool):

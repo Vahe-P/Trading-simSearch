@@ -10,13 +10,13 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from market_search.config import ForecastConfig
-from market_search.forecaster import (prepare_panel_data, similarity_search,
+from sim_search.config import ForecastConfig
+from sim_search.forecaster import (prepare_panel_data, similarity_search,
                                       forecast_from_neighbors, score_forecast
                                       )
-from market_search.times import set_default_tz, resample
-from market_search.visualization import plot_forecast_bands
-from market_search.windowing import partition_time_anchored
+from sim_search.times import set_default_tz, resample
+from sim_search.visualization import plot_forecast_bands
+from sim_search.windowing import partition_time_anchored
 
 
 def main():

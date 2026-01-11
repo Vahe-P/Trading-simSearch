@@ -5,12 +5,11 @@ from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
 import pandas as pd
-from dotenv import load_dotenv
 from loguru import logger
 from pandas.api.typing import DataFrameGroupBy, SeriesGroupBy
 
-from market_search import config
-from market_search.core import dt_idx
+from . import config
+from .core import dt_idx
 
 CME = xcals.get_calendar("CME")
 FUTURES = xcals.get_calendar("us_futures")
