@@ -1,0 +1,21 @@
+[project]
+name = "sim-search-26"
+version = "0.1.0"
+description = "Market Sim Search"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0.0",
+    "pydantic>=2.12.3",
+    "pydantic-settings>=2.0.0",
+    "pyarrow>=22.0.0",
+    "loguru>=0.7.3",
+    "plotly>=6.5.0",
+    "scikit-learn>=1.7.2",
+    "lightweight-charts>=2.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+    "notebook>=7.4.7",
+]
