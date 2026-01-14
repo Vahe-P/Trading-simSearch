@@ -116,7 +116,7 @@ if __name__ == "__main__":
     
     print(f"   Total windows: {len(collection)}")
     
-    # Split train/test
+    # Split train/test - classifies regimes using ONLY training data (no leakage)
     train, test = collection.split_train_test()
     
     # =========================================================================

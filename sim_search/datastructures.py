@@ -211,6 +211,9 @@ class WindowCollection:
         """
         Split into training collection and single test window.
         
+        IMPORTANT: Regime classification is done HERE using ONLY training data
+        to avoid data leakage / look-ahead bias.
+        
         Parameters
         ----------
         test_idx : int
@@ -227,7 +230,50 @@ class WindowCollection:
         train_windows = [w for i, w in enumerate(self.windows) if i < test_idx]
         test_window = self.windows[test_idx]
         
-        return WindowCollection(train_windows), test_window
+        train_collection = WindowCollection(train_windows)
+        
+        # Classify regimes using ONLY training data (no look-ahead bias)
+        vol_method = getattr(self, '_vol_method', None)
+        if vol_method and len(train_collection) > 10:
+            train_collection._classify_regimes_no_leakage(test_window)
+        
+        return train_collection, test_window
+    
+    def _classify_regimes_no_leakage(self, test_window: 'WindowData'):
+        """
+        Classify regimes using ONLY training data (this collection).
+        
+        This avoids data leakage by:
+        1. Computing thresholds from training volatilities only
+        2. Classifying both train AND test windows with those thresholds
+        """
+        from .volatility import compute_regime_thresholds, classify_regime, REGIME_NAMES
+        
+        # Get training volatilities only
+        train_vols = np.array([w.volatility for w in self.windows])
+        valid_vols = train_vols[~np.isnan(train_vols) & (train_vols > 0)]
+        
+        if len(valid_vols) < 10:
+            return
+        
+        # Compute thresholds from TRAINING data only
+        thresholds = compute_regime_thresholds(valid_vols)
+        
+        # Classify training windows
+        for w in self.windows:
+            w.regime = classify_regime(w.volatility, thresholds)
+        
+        # Classify test window using SAME thresholds (no leakage)
+        test_window.regime = classify_regime(test_window.volatility, thresholds)
+        
+        # Log for verification
+        from loguru import logger
+        regime_counts = {0: 0, 1: 0, 2: 0}
+        for w in self.windows:
+            regime_counts[w.regime] = regime_counts.get(w.regime, 0) + 1
+        logger.info(f"Regime distribution (NO LEAKAGE): " + 
+                   " | ".join(f"{REGIME_NAMES[k]}: {v} ({v/len(self.windows)*100:.1f}%)" 
+                             for k, v in regime_counts.items()))
     
     def get_same_regime_indices(self, query: WindowData) -> np.ndarray:
         """Get indices of windows in same regime as query."""

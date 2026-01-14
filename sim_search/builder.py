@@ -215,9 +215,11 @@ class WindowCollectionBuilder:
         collection = WindowCollection(windows)
         logger.info(f"Built collection with {len(collection)} valid windows")
         
-        # Compute regime classification if volatility was computed
-        if self.vol_method and len(collection) > 10:
-            self._classify_regimes(collection)
+        # NOTE: Regime classification is NO LONGER done here to avoid data leakage!
+        # Regimes will be classified when split_train_test() is called,
+        # using ONLY training data for threshold computation.
+        # The vol_method is stored so split_train_test knows to classify.
+        collection._vol_method = self.vol_method
         
         # Enrich with calendar events if requested
         if self.include_calendar:
