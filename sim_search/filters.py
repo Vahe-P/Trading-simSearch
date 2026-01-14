@@ -188,28 +188,30 @@ class RegimeFilter(BaseFilter):
         
         logger.debug(f"RegimeFilter fitted: thresholds={self.thresholds_}")
     
-    def _filter_indices(self, collection: WindowCollection, 
+    def _filter_indices(self, collection: WindowCollection,
                         query: Optional[WindowData]) -> np.ndarray:
         """Return indices of windows in same regime as query."""
         if query is None:
             logger.warning("RegimeFilter: No query provided, returning all indices")
             return np.arange(len(collection))
+
+        # Use query's pre-computed regime (set during building) for consistency
+        # This ensures we use the same regime classification as what's displayed
+        query_regime = query.regime
         
-        if self.thresholds_ is None:
-            raise ValueError("RegimeFilter not fitted. Call fit() first.")
-        
-        # Classify query regime
-        query_regime = classify_regime(query.volatility, self.thresholds_)
-        
-        # Get same-regime indices
+        # If query regime is unknown (-1), fall back to computing it
+        if query_regime == -1 and self.thresholds_ is not None:
+            query_regime = classify_regime(query.volatility, self.thresholds_)
+
+        # Get same-regime indices using pre-computed .regime attribute
         same_regime_idx = []
         for i, w in enumerate(collection):
-            w_regime = classify_regime(w.volatility, self.thresholds_)
-            if w_regime == query_regime:
+            # Use the window's pre-computed regime for consistency
+            if w.regime == query_regime:
                 same_regime_idx.append(i)
-        
+
         same_regime_idx = np.array(same_regime_idx)
-        
+
         # Fallback if not enough windows
         if len(same_regime_idx) < self.min_same_regime:
             logger.warning(

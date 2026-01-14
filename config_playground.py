@@ -293,7 +293,9 @@ if __name__ == "__main__":
         regime_emoji = '🟢' if w.regime == 0 else '🟡' if w.regime == 1 else '🔴'
         fomc_str = "🏛️ YES" if w.is_fomc_day else "   NO"
         horizon_ret = np.sum(w.y) * 100  # Convert to percent
-        print(f"   │ {i+1:3d} │ {str(w.cutoff)[:24]:24s} │ {dist:8.4f} │ {w.regime_name:3s} {regime_emoji} │ {fomc_str} │ {horizon_ret:+5.2f}% │")
+        # Format distance: use scientific notation for very small values
+        dist_str = f"{dist:.2e}" if dist < 0.0001 and dist > 0 else f"{dist:.4f}"
+        print(f"   │ {i+1:3d} │ {str(w.cutoff)[:24]:24s} │ {dist_str:>8s} │ {w.regime_name:3s} {regime_emoji} │ {fomc_str} │ {horizon_ret:+5.2f}% │")
     
     print("   └─────┴──────────────────────────┴──────────┴────────┴─────────┴───────┘")
     
