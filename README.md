@@ -6,6 +6,98 @@ A quantitative finance tool for market pattern matching and forecasting using ti
 
 This project finds historically similar market patterns to forecast future price movements. Given a current market window (e.g., overnight + morning session), it finds the K most similar historical windows and uses their subsequent movements to generate a forecast.
 
+## 📊 How It Works
+
+### Process Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    SIMILARITY SEARCH PIPELINE                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  1. LOAD DATA
+     df = pd.read_parquet("NQ_data.parquet")
+                              │
+                              ▼
+  2. BUILD WINDOWS
+     ┌──────────────────────────────────────────────────────────────┐
+     │  WindowCollectionBuilder(df)                                  │
+     │    .with_time_anchored_windows(8:00 PM → 9:30 AM)            │
+     │    .with_normalization('log_returns')                         │
+     │    .with_volatility('garman_klass')  ← Compute GK Vol        │
+     │    .with_calendar_events()           ← Tag FOMC/CPI/NFP      │
+     │    .build()                                                   │
+     └──────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+     WindowCollection: [WindowData₁, WindowData₂, ..., WindowDataₙ]
+     Each window bundles: pattern (x), horizon (y), cutoff, volatility,
+                          regime, is_fomc_day, is_cpi_day, is_nfp_day
+                              │
+                              ▼
+  3. SPLIT TRAIN/TEST
+     train, test = collection.split_train_test()
+                              │
+                              ▼
+  4. FILTER (Pre-KNN)
+     ┌──────────────────────────────────────────────────────────────┐
+     │  FilterPipeline([                                             │
+     │      RegimeFilter()     ← Only same volatility regime        │
+     │      CalendarFilter()   ← Match FOMC context                 │
+     │  ])                                                           │
+     └──────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+     193 windows → 62 windows (same regime + calendar context)
+                              │
+                              ▼
+  5. KNN SIMILARITY SEARCH
+     ┌──────────────────────────────────────────────────────────────┐
+     │  KNeighborsTimeSeriesRegressor(                              │
+     │      n_neighbors=10,                                          │
+     │      distance='wdtw'   ← Weighted DTW (tail emphasis)        │
+     │  )                                                            │
+     │                                                               │
+     │  Library: aeon.regression.distance_based                      │
+     └──────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+     10 most similar historical patterns found
+                              │
+                              ▼
+  6. FORECAST
+     Average the 10 neighbors' subsequent returns
+     → Predicted return: +0.15% over next 20 bars
+                              │
+                              ▼
+  7. VISUALIZE
+     plot_with_volatility() → report.html
+     Shows: candlestick + forecast + volatility subplot + regime shading
+```
+
+### Scripts
+
+| Script | Purpose | When to Use |
+|--------|---------|-------------|
+| `config_playground.py` | **PM Playground** - Easy parameter tuning | Quick experiments |
+| `market_forecast.py` | Full forecast with strategy comparison | Daily analysis |
+| `compare_strategies.py` | A/B backtest comparison | Validate improvements |
+
+### Quick Commands
+
+```bash
+# PM wants to experiment with parameters:
+uv run python config_playground.py
+
+# Run full analysis with multiple strategies:
+uv run python market_forecast.py
+
+# Backtest comparison:
+uv run python compare_strategies.py
+```
+
+---
+
 ## Key Features
 
 ### Core Functionality
@@ -14,7 +106,7 @@ This project finds historically similar market patterns to forecast future price
 - **Walk-Forward Backtesting**: Proper out-of-sample testing with no look-ahead bias
 - **Parallel Grid Search**: Optimize parameters across multiple configurations
 
-### Regime-Aware Similarity Search (NEW)
+### Regime-Aware Similarity Search
 
 The latest enhancement adds **volatility regime filtering** to ensure we only compare patterns from similar market conditions.
 
@@ -29,6 +121,8 @@ The latest enhancement adds **volatility regime filtering** to ensure we only co
 - We need intraday realized volatility at the same granularity as our patterns
 - GK uses all OHLC data and is ~5x more statistically efficient than close-to-close
 
+---
+
 ## Installation
 
 ```bash
@@ -38,18 +132,30 @@ The latest enhancement adds **volatility regime filtering** to ensure we only co
 # Sync dependencies
 uv sync
 
-# Run the comparison
-uv run python compare_strategies.py
+# Run the playground
+uv run python config_playground.py
 ```
 
-## Quick Start
+---
 
-### Run A/B Comparison
+## Usage Examples
 
-Compare baseline (DTW on all windows) vs regime-aware (GK filter + WDTW):
+### PM Parameter Playground
 
-```bash
-uv run python compare_strategies.py
+Edit variables at the top of `config_playground.py`:
+
+```python
+# Toggle filters ON/OFF
+REGIME_FILTER_ENABLED = True
+CALENDAR_FILTER_ENABLED = True
+MATCH_FOMC_CONTEXT = True
+
+# KNN settings
+N_NEIGHBORS = 10
+DISTANCE_METRIC = "wdtw"  # Options: "wdtw", "dtw", "euclidean"
+
+# Then run:
+# uv run python config_playground.py
 ```
 
 ### Run Single Backtest
@@ -58,28 +164,21 @@ uv run python compare_strategies.py
 from sim_search.backtester import BacktestConfig, Backtester
 import pandas as pd
 
-# Load data
 df = pd.read_parquet('data/test/NQ_2024-09-06_2025-09-13.parquet')
 
-# Configure backtest with regime filtering
 config = BacktestConfig(
     data_path='data/test/NQ_2024-09-06_2025-09-13.parquet',
     window_len=60,
-    step_size=5,
     forecast_horizon=20,
     n_neighbors=10,
-    distance_metric='wdtw',        # Weighted DTW (built-in tail weighting)
-    use_regime_filter=True,         # Enable regime filtering
-    vol_method='garman_klass',      # Use GK volatility
+    distance_metric='wdtw',
+    use_regime_filter=True,
+    vol_method='garman_klass',
 )
 
-# Run backtest
 backtester = Backtester(config)
 result = backtester.run(df)
-
 print(f"Direction Accuracy: {result.direction_accuracy:.1%}")
-print(f"Sharpe Ratio: {result.sharpe_ratio:.2f}")
-print(f"Profit Factor: {result.profit_factor:.2f}")
 ```
 
 ### Visualize with Volatility
@@ -95,8 +194,43 @@ fig = plot_with_volatility(
     actual_returns=actual,
     regime=1,  # 0=LOW, 1=MED, 2=HIGH
 )
-fig.write_html("report_with_vol.html", auto_open=True)
+fig.write_html("report.html", auto_open=True)
 ```
+
+---
+
+## Project Structure
+
+```
+sim_search/
+├── __init__.py           # Public API exports
+│
+│   # Data Structures (NEW)
+├── datastructures.py     # WindowData, WindowCollection
+├── builder.py            # WindowCollectionBuilder (fluent API)
+├── filters.py            # RegimeFilter, CalendarFilter, FilterPipeline
+├── calendar_events.py    # FOMC, CPI, NFP dates
+│
+│   # Core Algorithms
+├── forecaster.py         # KNN similarity search
+├── volatility.py         # GK/Parkinson vol, regime classification
+├── windowing.py          # Window partitioning
+├── backtester.py         # Walk-forward backtesting
+│
+│   # Visualization & Utils
+├── visualization.py      # Plotly charts
+├── times.py              # Exchange calendar utils
+├── config.py             # Configuration
+├── optimizer.py          # Grid search
+└── reporting.py          # Backtest reports
+
+# Root Scripts
+config_playground.py      # 🎮 PM parameter playground
+market_forecast.py        # Full forecast analysis
+compare_strategies.py     # A/B strategy comparison
+```
+
+---
 
 ## Configuration Options
 
@@ -111,7 +245,6 @@ fig.write_html("report_with_vol.html", auto_open=True)
 | `distance_metric` | str | 'euclidean' | Distance: 'dtw', 'wdtw', 'euclidean', etc. |
 | `use_regime_filter` | bool | False | Enable regime-aware filtering |
 | `vol_method` | str | 'garman_klass' | Volatility estimator |
-| `min_same_regime` | int | 5 | Min windows before fallback |
 
 ### Distance Metrics
 
@@ -123,130 +256,74 @@ fig.write_html("report_with_vol.html", auto_open=True)
 | `ddtw` | 🐢 Slow | Derivative DTW |
 | `msm` | 🐢 Slow | Move-Split-Merge |
 
-## Project Structure
+---
 
-```
-sim_search/
-├── datastructures.py  # WindowData, WindowCollection (NEW)
-├── filters.py         # RegimeFilter, CalendarFilter, FilterPipeline (NEW)
-├── builder.py         # WindowCollectionBuilder - fluent API (NEW)
-├── calendar_events.py # FOMC, CPI, NFP dates (NEW)
-├── backtester.py      # Walk-forward backtesting engine
-├── forecaster.py      # KNN similarity search + regime-aware search
-├── volatility.py      # GK/Parkinson volatility + regime classification
-├── windowing.py       # Window partitioning utilities
-├── visualization.py   # Plotly charts with volatility subplot
-├── optimizer.py       # Grid search optimization
-├── clustering.py      # Future path clustering
-└── config.py          # Configuration management
+## New Abstractions
 
-compare_strategies.py  # A/B test baseline vs regime-aware
-market_forecast.py     # Main forecast script with strategy comparison
-```
+### WindowData - Bundle Everything Together
 
-## New Abstractions (Pluggable Filter System)
-
-### Data Structures
-
-Instead of parallel arrays that must stay aligned, we now bundle everything in `WindowData`:
+Instead of parallel arrays that must stay aligned:
 
 ```python
 from sim_search import WindowData, WindowCollection
 
-# Each window has all data together
 window = WindowData(
     idx=0,
     x=pattern_array,           # Normalized pattern
     y=future_returns,          # Forecast horizon
-    cutoff=timestamp,          # Label
+    cutoff=timestamp,
     volatility=0.0003,         # GK volatility
     regime=1,                  # LOW=0, MED=1, HIGH=2
-    is_fomc_day=False,         # Calendar events
+    is_fomc_day=False,
     days_since_fomc=5,
 )
 ```
 
 ### Pluggable Filters (sklearn-compatible)
 
-Filters follow sklearn's transformer API and can be chained:
-
 ```python
 from sim_search import RegimeFilter, CalendarFilter, FilterPipeline
 
-# Create filter pipeline
 pipeline = FilterPipeline([
-    RegimeFilter(enabled=True, vol_method='garman_klass'),
-    CalendarFilter(match_fomc_context=True, exclude_red_folder=False),
+    RegimeFilter(enabled=True),
+    CalendarFilter(match_fomc_context=True),
 ])
 
-# Fit on training data
 pipeline.fit(train_collection)
-
-# Get filtered indices for a query
 indices = pipeline.transform(train_collection, query=test_window)
 ```
 
 ### Builder Pattern
 
-Fluent builder for creating enriched collections:
-
 ```python
 from sim_search import WindowCollectionBuilder
 from datetime import time
 
-builder = WindowCollectionBuilder(df)
-collection = (builder
+collection = (WindowCollectionBuilder(df)
     .with_time_anchored_windows(time(8), time(9, 30), extend_sessions=1)
     .with_horizon(20)
     .with_normalization('log_returns')
     .with_volatility('garman_klass')
-    .with_calendar_events()  # FOMC, CPI, NFP
+    .with_calendar_events()
     .build())
 
-# Easy train/test split
 train, test = collection.split_train_test()
-
-# Filter by regime
-same_regime = train.filter_by_regime(test.regime)
 ```
 
-### Calendar Events
-
-Built-in FOMC, CPI, NFP dates for filtering:
-
-```python
-from sim_search import is_fomc_day, days_since_fomc
-
-# Check if date is FOMC day
-is_fomc_day(timestamp)  # True/False
-
-# Days since last FOMC
-days_since_fomc(timestamp)  # e.g., 5
-```
-
-## Improvements Over Baseline
-
-### What Was Missing
-1. **No volatility awareness**: DTW compared all patterns regardless of market conditions
-2. **Only used close price**: OHLC data available but unused for volatility
-3. **No tail weighting**: All bars weighted equally despite recent bars being more predictive
-
-### What's New
-1. **Regime filtering**: Classify windows by GK volatility, only compare same regime
-2. **WDTW distance**: Built-in tail weighting (recent bars matter more)
-3. **Volatility visualization**: See vol subplot and regime shading in HTML reports
+---
 
 ## Future Enhancements
 
-- [ ] **Euclidean pre-filter**: Add fast coarse filter before WDTW (for 10k+ windows)
-- [ ] **Path signatures**: State-of-the-art feature extraction for fast filter
+- [ ] **Euclidean pre-filter**: Fast coarse filter before WDTW (for 10k+ windows)
+- [ ] **Path signatures**: State-of-the-art feature extraction
 - [ ] **Statistical significance testing**: Bootstrap CI, p-values
 - [ ] **Transaction cost modeling**: Commissions, slippage, spread
+
+---
 
 ## References
 
 - Garman, M. B., & Klass, M. J. (1980). On the estimation of security price volatilities from historical data. *Journal of Business*, 53(1), 67-78.
-- Parkinson, M. (1980). The extreme value method for estimating the variance of the rate of return. *Journal of Business*, 53(1), 61-65.
 - Sakoe, H., & Chiba, S. (1978). Dynamic programming algorithm optimization for spoken word recognition. *IEEE TASSP*, 26(1), 43-49.
 
 ## License
