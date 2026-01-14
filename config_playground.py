@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🎮 PARAMETER PLAYGROUND
+PARAMETER PLAYGROUND
 
 Edit the parameters below and run this script to test different configurations.
 This makes it easy to experiment with different settings without touching the main code.
@@ -14,12 +14,12 @@ Output:
 """
 
 # =============================================================================
-# 📊 DATA SETTINGS
+# DATA SETTINGS
 # =============================================================================
 DATA_PATH = "data/test/NQ_2024-09-06_2025-09-13.parquet"
 
 # =============================================================================
-# 🔧 FILTER SETTINGS (toggle on/off)
+# FILTER SETTINGS (toggle on/off)
 # =============================================================================
 
 # Regime Filter - match patterns from same volatility regime
@@ -32,7 +32,7 @@ MATCH_FOMC_CONTEXT = True      # FOMC days only match other FOMC days
 EXCLUDE_RED_FOLDER = False     # Exclude all high-impact event days (FOMC, CPI, NFP)
 
 # =============================================================================
-# 🎯 KNN SETTINGS
+# KNN SETTINGS
 # =============================================================================
 N_NEIGHBORS = 10               # K in KNN (more = smoother, less = more reactive)
 DISTANCE_METRIC = "wdtw"       # Options: "wdtw", "dtw", "euclidean", "msm"
@@ -42,7 +42,7 @@ DISTANCE_METRIC = "wdtw"       # Options: "wdtw", "dtw", "euclidean", "msm"
 WDTW_G = 0.05                  # Default: 0.05
 
 # =============================================================================
-# 📈 WINDOW SETTINGS
+# WINDOW SETTINGS
 # =============================================================================
 from datetime import time
 
@@ -53,7 +53,7 @@ HORIZON_LEN = 20               # Bars to forecast ahead
 NORM_METHOD = "log_returns"    # Options: "log_returns", "pct_change", "rolling_zscore"
 
 # =============================================================================
-# 🚀 RUN FORECAST
+# RUN FORECAST
 # =============================================================================
 
 if __name__ == "__main__":
@@ -66,45 +66,80 @@ if __name__ == "__main__":
         RegimeFilter, CalendarFilter, FilterPipeline,
         REGIME_NAMES
     )
-    from sim_search.forecaster import similarity_search, forecast_from_neighbors
-    from sim_search.visualization import plot_with_volatility
-    # Calendar events are embedded in WindowData via enrich_window_with_calendar
+    from sim_search.forecaster import similarity_search, forecast_from_neighbors, score_forecast
+    from sim_search.visualization import plot_forecast_analysis
     
-    print("\n" + "="*70)
-    print(" 🎮 PARAMETER PLAYGROUND - Regime-Aware Market Similarity Search")
-    print("="*70)
+    print("\n" + "="*80)
+    print(" PARAMETER PLAYGROUND - Regime-Aware Market Similarity Search")
+    print("="*80)
+    
+    # =========================================================================
+    # METHODOLOGY OVERVIEW
+    # =========================================================================
+    print("\n" + "-"*80)
+    print(" METHODOLOGY OVERVIEW")
+    print("-"*80)
+    print("""
+   This pipeline finds similar historical patterns and forecasts future returns.
+   
+   STEP 1: WINDOWING
+   |-- Extract fixed time windows (e.g., 8:00 PM -> 9:30 AM overnight sessions)
+   |-- Each window = one trading pattern with known future outcome (horizon)
+   +-- Normalize patterns using log returns for scale invariance
+   
+   STEP 2: REGIME CLASSIFICATION (Volatility-Based)
+   |-- Compute Garman-Klass volatility for each window (uses OHLC, 5x more efficient)
+   |-- Classify into LOW / MEDIUM / HIGH volatility regimes
+   +-- Why? Similar patterns in different vol regimes have different follow-through
+   
+   STEP 3: PRE-FILTERING
+   |-- Regime Filter: Only compare against same-regime patterns
+   |-- Calendar Filter: Match FOMC days with FOMC days (event context matters)
+   +-- Reduces noise, improves signal
+   
+   STEP 4: KNN SIMILARITY SEARCH
+   |-- Algorithm: K-Nearest Neighbors Time Series Regressor (aeon library)
+   |-- Distance: WDTW (Weighted DTW) - emphasizes recent bars (tail of pattern)
+   +-- Find K most similar historical patterns from filtered pool
+   
+   STEP 5: FORECAST
+   |-- Aggregate K neighbors' future returns (weighted average by distance)
+   +-- Direction + magnitude prediction
+""")
     
     # =========================================================================
     # CONFIG SUMMARY
     # =========================================================================
-    print("\n┌" + "─"*68 + "┐")
-    print("│ 📋 CURRENT CONFIGURATION" + " "*43 + "│")
-    print("├" + "─"*68 + "┤")
-    print(f"│  Regime Filter:   {'✅ ENABLED':20s} │ Vol Method:  {VOL_METHOD:15s}  │")
-    print(f"│  Calendar Filter: {'✅ ENABLED' if CALENDAR_FILTER_ENABLED else '❌ DISABLED':20s} │ Match FOMC:  {'YES' if MATCH_FOMC_CONTEXT else 'NO':15s}  │")
-    print("├" + "─"*68 + "┤")
-    print(f"│  KNN Algorithm:   K-Nearest Neighbors Time Series Regressor        │")
-    print(f"│  Distance Metric: {DISTANCE_METRIC.upper():15s} │ K Neighbors: {N_NEIGHBORS:<15d}  │")
+    print("-"*80)
+    print(" CURRENT CONFIGURATION")
+    print("-"*80)
+    print("\n   +" + "-"*76 + "+")
+    print(f"   |  FILTERS                                                                   |")
+    print(f"   |    Regime Filter:   {'ENABLED':12s}  |  Vol Method:    {VOL_METHOD:20s}   |")
+    print(f"   |    Calendar Filter: {'ENABLED' if CALENDAR_FILTER_ENABLED else 'DISABLED':12s}  |  Match FOMC:    {'YES' if MATCH_FOMC_CONTEXT else 'NO':20s}   |")
+    print("   +" + "-"*76 + "+")
+    print(f"   |  KNN SETTINGS                                                              |")
+    print(f"   |    Distance Metric: {DISTANCE_METRIC.upper():12s}  |  K Neighbors:   {N_NEIGHBORS:<20d}   |")
     if DISTANCE_METRIC == "wdtw":
-        print(f"│  WDTW Weight (g): {WDTW_G:<15.3f} │ (higher = more recent weight) │")
-    print("├" + "─"*68 + "┤")
-    print(f"│  Window:          {WINDOW_START.strftime('%H:%M')} → {WINDOW_END.strftime('%H:%M')} (overnight session)              │")
-    print(f"│  Horizon:         {HORIZON_LEN} bars ahead" + " "*40 + "│")
-    print(f"│  Normalization:   {NORM_METHOD:20s}" + " "*28 + "│")
-    print("└" + "─"*68 + "┘")
+        print(f"   |    WDTW Weight (g): {WDTW_G:<12.3f}  |  (higher g = more weight on recent bars)   |")
+    print("   +" + "-"*76 + "+")
+    print(f"   |  WINDOW SETTINGS                                                           |")
+    print(f"   |    Time Range:      {WINDOW_START.strftime('%H:%M')} -> {WINDOW_END.strftime('%H:%M')}   |  Extend Sessions: {EXTEND_SESSIONS} (overnight)          |")
+    print(f"   |    Horizon:         {HORIZON_LEN} bars       |  Normalization:   {NORM_METHOD:20s}   |")
+    print("   +" + "-"*76 + "+")
     
     # =========================================================================
     # LOAD DATA
     # =========================================================================
-    print(f"\n📂 Loading data from {DATA_PATH}...")
+    print(f"\n[DATA] Loading from {DATA_PATH}...")
     df = pd.read_parquet(DATA_PATH)
     print(f"   Total bars: {len(df):,}")
-    print(f"   Date range: {df.index.min().strftime('%Y-%m-%d')} → {df.index.max().strftime('%Y-%m-%d')}")
+    print(f"   Date range: {df.index.min().strftime('%Y-%m-%d')} -> {df.index.max().strftime('%Y-%m-%d')}")
     
     # =========================================================================
     # BUILD WINDOWS
     # =========================================================================
-    print("\n🔨 Building window collection...")
+    print("\n[BUILD] Creating window collection...")
     builder = WindowCollectionBuilder(df)
     collection = (builder
         .with_time_anchored_windows(WINDOW_START, WINDOW_END, EXTEND_SESSIONS)
@@ -116,47 +151,65 @@ if __name__ == "__main__":
     
     print(f"   Total windows: {len(collection)}")
     
-    # Split train/test - classifies regimes using ONLY training data (no leakage)
+    # Split train/test - classifies regimes using ONLY training data (no data leakage!)
     train, test = collection.split_train_test()
+    total_train = len(train)
     
     # =========================================================================
-    # REGIME ANALYSIS
+    # REGIME ANALYSIS - FULL BREAKDOWN
     # =========================================================================
-    print("\n" + "─"*70)
-    print(" 📊 MARKET REGIME ANALYSIS (Garman-Klass Volatility)")
-    print("─"*70)
+    print("\n" + "="*80)
+    print(" STEP 2: REGIME CLASSIFICATION RESULTS")
+    print("="*80)
     
     # Count regimes in training set
     regime_counts = Counter(w.regime for w in train)
-    total_train = len(train)
     
-    print(f"\n   Training Data Regime Distribution:")
-    print("   ┌─────────────┬─────────┬─────────┬──────────────────────────────┐")
-    print("   │ Regime      │ Count   │ Percent │ Bar                          │")
-    print("   ├─────────────┼─────────┼─────────┼──────────────────────────────┤")
+    print(f"""
+   Volatility Method: {VOL_METHOD.upper()}
+   
+   Garman-Klass volatility uses all OHLC data (not just close) and is ~5x more
+   statistically efficient than close-to-close volatility.
+   
+   Formula: var = 0.5*(ln(H/L))^2 - (2*ln(2)-1)*(ln(C/O))^2
+   
+   Regime thresholds computed from TRAINING DATA ONLY (no look-ahead bias):
+   - LOW:    volatility < 33rd percentile
+   - MEDIUM: volatility between 33rd and 67th percentile  
+   - HIGH:   volatility > 67th percentile
+""")
+    
+    print("   +---------------------------------------------------------------------------+")
+    print("   |                    TRAINING SET: ALL {:4d} WINDOWS                        |".format(total_train))
+    print("   +-----------+-------+---------+-------------------------------------------+")
+    print("   | Regime    | Count | Percent | Distribution                              |")
+    print("   +-----------+-------+---------+-------------------------------------------+")
     
     for regime in [0, 1, 2]:
         count = regime_counts.get(regime, 0)
         pct = count / total_train * 100 if total_train > 0 else 0
         name = REGIME_NAMES[regime]
-        emoji = '🟢' if regime == 0 else '🟡' if regime == 1 else '🔴'
-        bar = '█' * int(pct / 3)
-        print(f"   │ {emoji} {name:8s} │ {count:7d} │ {pct:6.1f}% │ {bar:28s} │")
+        bar = '#' * int(pct / 2.5)
+        regime_marker = '[L]' if regime == 0 else '[M]' if regime == 1 else '[H]'
+        print(f"   | {regime_marker} {name:6s} | {count:5d} | {pct:6.1f}% | {bar:41s} |")
     
-    print("   └─────────────┴─────────┴─────────┴──────────────────────────────┘")
+    print("   +-----------+-------+---------+-------------------------------------------+")
     
     # Test window regime
-    test_emoji = '🟢' if test.regime == 0 else '🟡' if test.regime == 1 else '🔴'
-    print(f"\n   🎯 Test Window Regime: {test_emoji} {test.regime_name}")
-    print(f"      Cutoff: {test.cutoff}")
-    print(f"      Volatility: {test.volatility:.6f}")
+    test_marker = '[L]' if test.regime == 0 else '[M]' if test.regime == 1 else '[H]'
+    print(f"""
+   TEST WINDOW (what we're forecasting):
+      |-- Cutoff:     {test.cutoff}
+      |-- Volatility: {test.volatility:.6f}
+      +-- Regime:     {test_marker} {test.regime_name}
+""")
     
     # =========================================================================
     # CALENDAR EVENT ANALYSIS
     # =========================================================================
-    print("\n" + "─"*70)
-    print(" 📅 CALENDAR EVENT ANALYSIS (Red Folder Days)")
-    print("─"*70)
+    print("-"*80)
+    print(" CALENDAR EVENT ANALYSIS (Red Folder Days)")
+    print("-"*80)
     
     # Count events in training
     fomc_count = sum(1 for w in train if w.is_fomc_day)
@@ -164,14 +217,20 @@ if __name__ == "__main__":
     nfp_count = sum(1 for w in train if w.is_nfp_day)
     event_days = sum(1 for w in train if w.is_fomc_day or w.is_cpi_day or w.is_nfp_day)
     
-    print(f"\n   Training Set Event Days:")
-    print("   ┌──────────────────────────────────────────────────────────────┐")
-    print(f"   │ 🏛️  FOMC Days:           {fomc_count:4d} windows                        │")
-    print(f"   │ 📊 CPI Release Days:    {cpi_count:4d} windows                        │")
-    print(f"   │ 💼 NFP Release Days:    {nfp_count:4d} windows                        │")
-    print("   ├──────────────────────────────────────────────────────────────┤")
-    print(f"   │ 📛 Total Red Folder:    {event_days:4d} windows ({event_days/total_train*100:.1f}%)             │")
-    print("   └──────────────────────────────────────────────────────────────┘")
+    print(f"""
+   "Red folder" events = high-impact macro releases that change market dynamics.
+   Patterns on event days should only match other event days.
+   
+   Training Set Event Days:
+   +--------------------------------------------+
+   | FOMC Decision Days:       {fomc_count:4d} windows     |
+   | CPI Release Days:         {cpi_count:4d} windows     |
+   | NFP Release Days:         {nfp_count:4d} windows     |
+   +--------------------------------------------+
+   | Total Red Folder:         {event_days:4d} windows     |
+   | ({event_days/total_train*100:.1f}% of training set)                |
+   +--------------------------------------------+
+""")
     
     # Test window calendar info
     test_events = []
@@ -179,25 +238,25 @@ if __name__ == "__main__":
     if test.is_cpi_day: test_events.append("CPI")
     if test.is_nfp_day: test_events.append("NFP")
     
-    print(f"\n   🎯 Test Window Calendar:")
-    print(f"      FOMC day: {'✅ YES' if test.is_fomc_day else '❌ NO'} (Days since FOMC: {test.days_since_fomc})")
-    print(f"      CPI day:  {'✅ YES' if test.is_cpi_day else '❌ NO'}")
-    print(f"      NFP day:  {'✅ YES' if test.is_nfp_day else '❌ NO'}")
+    print(f"   TEST WINDOW CALENDAR:")
+    print(f"      |-- FOMC day:       {'YES' if test.is_fomc_day else 'NO'}")
+    print(f"      |-- CPI day:        {'YES' if test.is_cpi_day else 'NO'}")
+    print(f"      |-- NFP day:        {'YES' if test.is_nfp_day else 'NO'}")
+    print(f"      +-- Days since FOMC: {test.days_since_fomc}")
     if test_events:
-        print(f"      ⚠️  RED FOLDER DAY: {', '.join(test_events)}")
+        print(f"\n      ** THIS IS A RED FOLDER DAY: {', '.join(test_events)} **")
     
     # =========================================================================
-    # APPLY FILTERS
+    # FILTERING - CLEAR BREAKDOWN
     # =========================================================================
-    print("\n" + "─"*70)
-    print(" 🔍 FILTERING PIPELINE")
-    print("─"*70)
+    print("\n" + "="*80)
+    print(" STEP 3: PRE-FILTERING (What's KEPT vs IGNORED)")
+    print("="*80)
     
     filters = []
     
     if REGIME_FILTER_ENABLED:
         filters.append(RegimeFilter(enabled=True, vol_method=VOL_METHOD))
-        print(f"\n   1️⃣  RegimeFilter: Only match {test.regime_name} volatility windows")
     
     if CALENDAR_FILTER_ENABLED:
         filters.append(CalendarFilter(
@@ -205,10 +264,6 @@ if __name__ == "__main__":
             match_fomc_context=MATCH_FOMC_CONTEXT,
             exclude_red_folder=EXCLUDE_RED_FOLDER
         ))
-        if MATCH_FOMC_CONTEXT:
-            print(f"   2️⃣  CalendarFilter: FOMC context matching {'enabled' if test.is_fomc_day else '(test is non-FOMC)'}")
-        if EXCLUDE_RED_FOLDER:
-            print(f"   2️⃣  CalendarFilter: Excluding red folder days")
     
     pipeline = FilterPipeline(filters) if filters else None
     
@@ -217,47 +272,102 @@ if __name__ == "__main__":
         filtered_indices = pipeline.transform(train, query=test)
         filtered_train = train.filter_by_indices(filtered_indices.tolist())
         
-        # Show filtering breakdown
-        print(f"\n   📉 Filter Results:")
-        print(f"      Before filtering: {len(train)} windows")
-        print(f"      After filtering:  {len(filtered_train)} windows")
-        print(f"      Reduction:        {len(train) - len(filtered_train)} windows removed ({(1 - len(filtered_train)/len(train))*100:.1f}%)")
+        # Detailed filtering breakdown
+        print(f"""
+   Why filter? To avoid comparing apples to oranges:
+   - A pattern in a quiet market (LOW vol) behaves differently than in chaos (HIGH vol)
+   - FOMC announcement days have unique dynamics
+   
+   TEST WINDOW is: {test_marker} {test.regime_name} regime{', FOMC day' if test.is_fomc_day else ''}
+""")
+        
+        print("   +---------------------------------------------------------------------------+")
+        print("   |                         FILTERING BREAKDOWN                               |")
+        print("   +-----------+-------+--------------+--------------------------------------+")
+        print("   | Regime    | Count | Status       | Reason                               |")
+        print("   +-----------+-------+--------------+--------------------------------------+")
+        
+        for regime in [0, 1, 2]:
+            count = regime_counts.get(regime, 0)
+            name = REGIME_NAMES[regime]
+            regime_marker = '[L]' if regime == 0 else '[M]' if regime == 1 else '[H]'
+            
+            if regime == test.regime:
+                status = "KEPT"
+                reason = f"Matches test regime ({test.regime_name})"
+            else:
+                status = "IGNORED"
+                reason = f"Different regime than test"
+            
+            print(f"   | {regime_marker} {name:6s} | {count:5d} | {status:12s} | {reason:36s} |")
+        
+        print("   +-----------+-------+--------------+--------------------------------------+")
+        
+        # Calendar filter effect
+        if CALENDAR_FILTER_ENABLED and MATCH_FOMC_CONTEXT:
+            kept_fomc = sum(1 for i in filtered_indices if train[i].is_fomc_day)
+            kept_non_fomc = len(filtered_indices) - kept_fomc
+            print(f"""
+   Calendar Filter Effect:
+   |-- Test is {'FOMC day' if test.is_fomc_day else 'NON-FOMC day'}
+   +-- {'Only FOMC days kept' if test.is_fomc_day else 'Only non-FOMC days kept'}
+       -> {kept_fomc if test.is_fomc_day else kept_non_fomc} windows in final pool
+""")
+        
+        print(f"""
+   ==============================================================================
+   FILTER SUMMARY:
+      Before filtering: {total_train:4d} windows (all regimes)
+      After filtering:  {len(filtered_train):4d} windows (only {test.regime_name} regime{', matching calendar' if CALENDAR_FILTER_ENABLED else ''})
+      Removed:          {total_train - len(filtered_train):4d} windows ({(1 - len(filtered_train)/total_train)*100:.1f}% filtered out)
+   ==============================================================================
+""")
     else:
         filtered_train = train
-        print(f"\n   ⚠️  No filters applied, using all {len(train)} windows")
-    
-    # Show filtered regime distribution
-    filtered_regime_counts = Counter(w.regime for w in filtered_train)
-    print(f"\n   Filtered Set Regime Distribution:")
-    for regime in [0, 1, 2]:
-        count = filtered_regime_counts.get(regime, 0)
-        emoji = '🟢' if regime == 0 else '🟡' if regime == 1 else '🔴'
-        print(f"      {emoji} {REGIME_NAMES[regime]}: {count} windows")
+        print(f"\n   ** No filters applied, using all {total_train} windows **")
     
     # =========================================================================
-    # KNN SIMILARITY SEARCH
+    # KNN SIMILARITY SEARCH - DETAILED
     # =========================================================================
-    print("\n" + "─"*70)
-    print(f" 🎯 KNN SIMILARITY SEARCH ({DISTANCE_METRIC.upper()})")
-    print("─"*70)
+    print("="*80)
+    print(f" STEP 4: KNN SIMILARITY SEARCH ({DISTANCE_METRIC.upper()})")
+    print("="*80)
     
-    print(f"\n   Algorithm: K-Nearest Neighbors Time Series Regressor")
-    print(f"   Library:   aeon.regression.distance_based.KNeighborsTimeSeriesRegressor")
-    print(f"   Distance:  {DISTANCE_METRIC.upper()}", end="")
+    print(f"""
+   ALGORITHM: K-Nearest Neighbors Time Series Regressor
+   LIBRARY:   aeon.regression.distance_based.KNeighborsTimeSeriesRegressor
+   
+   DISTANCE METRIC: {DISTANCE_METRIC.upper()}""")
+    
     if DISTANCE_METRIC == "wdtw":
-        print(f" (Weighted DTW - emphasizes recent bars)")
-        print(f"              Weight parameter g={WDTW_G}")
+        print(f"""
+      Weighted Dynamic Time Warping (WDTW)
+      |-- Like DTW but applies weight decay to time steps
+      |-- Weight parameter g = {WDTW_G}
+      |-- Higher g = MORE weight on recent bars (tail of pattern)
+      +-- Why? The 9:30 AM reaction (end of overnight) is most predictive
+""")
     elif DISTANCE_METRIC == "dtw":
-        print(f" (Dynamic Time Warping - shape matching)")
+        print("""
+      Dynamic Time Warping (DTW)
+      |-- Allows elastic time alignment between patterns
+      |-- Good for patterns that are similar but shifted in time
+      +-- O(n^2) complexity - slower than Euclidean
+""")
     elif DISTANCE_METRIC == "euclidean":
-        print(f" (Euclidean - point-to-point distance)")
-    elif DISTANCE_METRIC == "msm":
-        print(f" (Move-Split-Merge - edit distance)")
-    else:
-        print()
+        print("""
+      Euclidean Distance
+      |-- Simple point-to-point distance
+      |-- Fast: O(n) complexity
+      +-- Requires patterns to be exactly aligned in time
+""")
     
-    print(f"   K:         {N_NEIGHBORS} neighbors")
-    print(f"   Search pool: {len(filtered_train)} windows")
+    print(f"""   K NEIGHBORS: {N_NEIGHBORS}
+      |-- Lower K (3-5):  More reactive, captures local patterns, higher variance
+      +-- Higher K (15+): Smoother forecasts, more robust, may miss recent shifts
+   
+   SEARCH POOL: {len(filtered_train)} windows (after filtering)
+""")
     
     # Convert to format expected by similarity_search
     x_train_list = [pd.DataFrame(w.x) for w in filtered_train]
@@ -268,7 +378,7 @@ if __name__ == "__main__":
     if DISTANCE_METRIC == "wdtw":
         distance_params = {"g": WDTW_G}
     
-    print(f"\n   🔄 Computing {DISTANCE_METRIC.upper()} distances against {len(filtered_train)} patterns...")
+    print(f"   [SEARCH] Computing {DISTANCE_METRIC.upper()} distances against {len(filtered_train)} patterns...")
     
     neighbor_idx, neighbor_dists = similarity_search(
         x_train_list,
@@ -281,98 +391,212 @@ if __name__ == "__main__":
     )
     
     # =========================================================================
-    # NEIGHBORS FOUND
+    # NEIGHBORS FOUND - DETAILED TABLE
     # =========================================================================
-    print(f"\n   ✅ Found {len(neighbor_idx)} similar patterns:")
-    print("\n   ┌─────┬──────────────────────────┬──────────┬────────┬─────────┬───────┐")
-    print("   │  #  │ Cutoff                   │ Distance │ Regime │ FOMC?   │ Δ Ret │")
-    print("   ├─────┼──────────────────────────┼──────────┼────────┼─────────┼───────┤")
+    print(f"\n   Found {len(neighbor_idx)} most similar patterns:\n")
+    print("   +-----+--------------------------+------------+--------+---------+-----------+")
+    print("   |  #  | Pattern Date             | Distance   | Regime | FOMC?   | Horizon % |")
+    print("   +-----+--------------------------+------------+--------+---------+-----------+")
     
+    horizon_returns = []
+    neighbor_windows = []
     for i, (idx, dist) in enumerate(zip(neighbor_idx, neighbor_dists)):
         w = filtered_train[idx]
-        regime_emoji = '🟢' if w.regime == 0 else '🟡' if w.regime == 1 else '🔴'
-        fomc_str = "🏛️ YES" if w.is_fomc_day else "   NO"
+        neighbor_windows.append(w)
+        fomc_str = "YES" if w.is_fomc_day else "NO"
         horizon_ret = np.sum(w.y) * 100  # Convert to percent
+        horizon_returns.append(horizon_ret)
+        
         # Format distance: use scientific notation for very small values
         dist_str = f"{dist:.2e}" if dist < 0.0001 and dist > 0 else f"{dist:.4f}"
-        print(f"   │ {i+1:3d} │ {str(w.cutoff)[:24]:24s} │ {dist_str:>8s} │ {w.regime_name:3s} {regime_emoji} │ {fomc_str} │ {horizon_ret:+5.2f}% │")
+        
+        # Direction indicator
+        dir_char = "+" if horizon_ret > 0 else "-" if horizon_ret < 0 else " "
+        regime_marker = '[L]' if w.regime == 0 else '[M]' if w.regime == 1 else '[H]'
+        
+        print(f"   | {i+1:3d} | {str(w.cutoff)[:24]:24s} | {dist_str:>10s} | {regime_marker:6s} | {fomc_str:7s} | {dir_char}{abs(horizon_ret):8.4f}% |")
     
-    print("   └─────┴──────────────────────────┴──────────┴────────┴─────────┴───────┘")
+    print("   +-----+--------------------------+------------+--------+---------+-----------+")
+    
+    # Neighbor statistics
+    up_neighbors = sum(1 for r in horizon_returns if r > 0)
+    down_neighbors = len(horizon_returns) - up_neighbors
+    avg_neighbor_ret = np.mean(horizon_returns)
+    
+    print(f"""
+   NEIGHBOR CONSENSUS:
+      Bullish neighbors:    {up_neighbors:2d} ({up_neighbors/len(horizon_returns)*100:.0f}%)
+      Bearish neighbors:    {down_neighbors:2d} ({down_neighbors/len(horizon_returns)*100:.0f}%)
+      Average return:       {avg_neighbor_ret:+.4f}%
+""")
     
     # =========================================================================
-    # FORECAST
+    # FORECAST - COMPREHENSIVE METRICS
     # =========================================================================
-    print("\n" + "─"*70)
-    print(" 📈 FORECAST RESULT")
-    print("─"*70)
+    print("="*80)
+    print(" STEP 5: FORECAST RESULT & STATISTICAL EVALUATION")
+    print("="*80)
     
     # Get neighbor horizons and forecast
     neighbor_horizons = np.stack([filtered_train[i].y for i in neighbor_idx])
     forecast = forecast_from_neighbors(neighbor_horizons, neighbor_dists, impl='avg')
     
+    # Calculate all metrics
+    score = score_forecast(forecast, test.y)
+    
     forecast_ret = np.sum(forecast) * 100
     actual_ret = np.sum(test.y) * 100
     
-    forecast_dir = "LONG ↑" if forecast_ret > 0 else "SHORT ↓"
-    actual_dir = "LONG ↑" if actual_ret > 0 else "SHORT ↓"
+    forecast_dir = "LONG" if forecast_ret > 0 else "SHORT"
+    actual_dir = "UP" if actual_ret > 0 else "DOWN"
     
-    print(f"\n   Forecast:  {forecast_dir}  ({forecast_ret:+.3f}%)")
-    print(f"   Actual:    {actual_dir}  ({actual_ret:+.3f}%)")
+    print(f"""
+   FORECAST AGGREGATION METHOD: Distance-Weighted Average
+   |-- Closer neighbors (lower distance) get higher weight
+   +-- Weight = 1 / (distance + epsilon)
+   
+   +----------------------------------------------------------------------------+
+   |                           FORECAST vs ACTUAL                               |
+   +----------------------------------------------------------------------------+
+   |                                                                            |
+   |   FORECAST DIRECTION:  {forecast_dir:10s}                                        |
+   |   FORECAST RETURN:     {forecast_ret:+.6f}%                                        |
+   |                                                                            |
+   |   ACTUAL DIRECTION:    {actual_dir:10s}                                          |
+   |   ACTUAL RETURN:       {actual_ret:+.6f}%                                         |
+   |                                                                            |
+   +----------------------------------------------------------------------------+
+""")
     
     # Direction accuracy
     correct = (forecast_ret > 0) == (actual_ret > 0)
-    if correct:
-        print(f"\n   ✅ DIRECTION CORRECT!")
-    else:
-        print(f"\n   ❌ Direction wrong")
     
-    # Error
-    mae = np.mean(np.abs(forecast - test.y))
-    print(f"   MAE: {mae:.6f}")
+    print(f"""
+   ==============================================================================
+                              STATISTICAL METRICS
+   ==============================================================================
+   
+   DIRECTION ACCURACY:  {'CORRECT' if correct else 'WRONG':20s}
+      +-- Did we predict the right direction? {'YES' if correct else 'NO'}
+   
+   RMSE (Root Mean Squared Error): {score['rmse']:.6f}
+      +-- Average magnitude of prediction errors (lower = better)
+      +-- Penalizes large errors more than small ones
+   
+   MAE (Mean Absolute Error):      {score['mae']:.6f}
+      +-- Average absolute difference between forecast and actual
+      +-- More robust to outliers than RMSE
+   
+   R-squared (Coefficient of Determination): {score['r2']:+.4f}
+      +-- How much variance in actual returns is explained by forecast
+      +-- Range: -inf to 1.0 (1.0 = perfect, 0 = baseline, <0 = worse than mean)
+   
+   MSE (Mean Squared Error):       {score['mse']:.8f}
+      +-- RMSE^2 - useful for comparing models
+   
+   ==============================================================================
+""")
+    
+    # Per-bar breakdown
+    print("   PER-BAR FORECAST vs ACTUAL (first 10 bars):")
+    print("   +------+------------+------------+------------+")
+    print("   | Bar  | Forecast   | Actual     | Error      |")
+    print("   +------+------------+------------+------------+")
+    for i in range(min(10, len(forecast))):
+        err = forecast[i] - test.y[i]
+        print(f"   | {i+1:4d} | {forecast[i]*100:+9.4f}% | {test.y[i]*100:+9.4f}% | {err*100:+9.4f}% |")
+    if len(forecast) > 10:
+        print(f"   |  ... |    ...     |    ...     |    ...     |")
+    print("   +------+------------+------------+------------+")
     
     # =========================================================================
-    # VISUALIZATION
+    # INTERPRETATION GUIDE
     # =========================================================================
-    print("\n" + "─"*70)
-    print(" 📊 GENERATING VISUALIZATION")
-    print("─"*70)
     
-    fig = plot_with_volatility(
+    up_avg = np.mean([r for r in horizon_returns if r > 0]) if up_neighbors > 0 else 0
+    down_avg = np.mean([r for r in horizon_returns if r < 0]) if down_neighbors > 0 else 0
+    
+    print(f"""
+   ==============================================================================
+                              INTERPRETATION GUIDE
+   ==============================================================================
+   
+   WHAT THIS FORECAST MEANS:
+   
+   We found {len(neighbor_idx)} historical patterns from {test.regime_name}-volatility days that
+   looked similar to today's pattern (ending at {str(test.cutoff)[:19]}).
+   
+   Of those {len(neighbor_idx)} similar patterns:
+   - {up_neighbors} went UP afterward (avg: {up_avg:.4f}%)
+   - {down_neighbors} went DOWN afterward (avg: {down_avg:.4f}%)
+   
+   Based on this, the model forecasts: {forecast_dir} with {abs(forecast_ret):.4f}% expected move.
+   
+   CONFIDENCE INDICATORS:
+   - Neighbor agreement:     {max(up_neighbors, down_neighbors)/len(neighbor_idx)*100:.0f}% ({max(up_neighbors, down_neighbors)}/{len(neighbor_idx)} neighbors agree)
+   - Distance spread:        {neighbor_dists.min():.2e} to {neighbor_dists.max():.2e}
+   - Avg neighbor distance:  {np.mean(neighbor_dists):.2e}
+   
+   ==============================================================================
+""")
+    
+    # =========================================================================
+    # VISUALIZATION - Enhanced 4-panel analysis
+    # =========================================================================
+    print("-"*80)
+    print(" GENERATING VISUALIZATION")
+    print("-"*80)
+    
+    fig = plot_forecast_analysis(
         df=df,
         cutoff=test.cutoff,
         forecast_returns=forecast,
-        window_size=test.x.shape[-1],
         actual_returns=test.y,
+        neighbor_windows=neighbor_windows,
+        neighbor_distances=neighbor_dists,
+        score_dict=score,
         regime=test.regime,
-        title=f"Forecast (k={N_NEIGHBORS}, {DISTANCE_METRIC.upper()}, Regime={test.regime_name})",
+        title=f"Forecast Analysis (k={N_NEIGHBORS}, {DISTANCE_METRIC.upper()})",
         hist_context_bars=100
     )
     
     output_file = "report_playground.html"
     fig.write_html(output_file, full_html=True, auto_open=True)
-    print(f"\n   ✅ Saved to {output_file} (opened in browser)")
+    print(f"\n   Saved to {output_file} (opened in browser)")
+    
+    print("""
+   PLOT CONTENTS:
+   1. Top-Left:     Price forecast vs actual with regime shading
+   2. Top-Right:    Neighbor quality scatter (distance vs return)
+   3. Bottom-Left:  Cumulative return comparison over horizon
+   4. Bottom-Right: Residual analysis (forecast errors per bar)
+""")
     
     # =========================================================================
-    # HOW TO MODIFY
+    # HOW TO EXPERIMENT
     # =========================================================================
-    print("\n" + "="*70)
-    print(" 🎮 HOW TO EXPERIMENT")
-    print("="*70)
+    print("\n" + "="*80)
+    print(" HOW TO EXPERIMENT")
+    print("="*80)
     print("""
-   Edit parameters at the top of this file:
+   Edit parameters at the TOP of this file (config_playground.py):
    
-   1. Toggle filters ON/OFF:
-      REGIME_FILTER_ENABLED = True/False
-      CALENDAR_FILTER_ENABLED = True/False
-   
-   2. Change KNN settings:
-      N_NEIGHBORS = 5, 10, 20, ...
-      DISTANCE_METRIC = "wdtw", "dtw", "euclidean"
-   
-   3. Adjust WDTW weight:
-      WDTW_G = 0.01 (less tail weight) to 0.1 (more tail weight)
+   +--------------------------------------------------------------------------+
+   | FILTERS                                                                  |
+   |   REGIME_FILTER_ENABLED = True/False   # Match same vol regime          |
+   |   CALENDAR_FILTER_ENABLED = True/False # Match FOMC context             |
+   +--------------------------------------------------------------------------+
+   | KNN SETTINGS                                                             |
+   |   N_NEIGHBORS = 5, 10, 15, 20...       # More = smoother forecast       |
+   |   DISTANCE_METRIC = "wdtw" | "dtw" | "euclidean"                        |
+   |   WDTW_G = 0.01 to 0.1                 # Tail weight (only for WDTW)    |
+   +--------------------------------------------------------------------------+
+   | WINDOW SETTINGS                                                          |
+   |   HORIZON_LEN = 10, 20, 30...          # Bars to forecast ahead         |
+   |   NORM_METHOD = "log_returns" | "pct_change" | "rolling_zscore"         |
+   +--------------------------------------------------------------------------+
    
    Then run again:
       uv run python config_playground.py
 """)
-    print("="*70)
+    print("="*80)
