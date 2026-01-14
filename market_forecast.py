@@ -336,7 +336,8 @@ def main():
         window_size=window_size,
         actual_returns=y_test,
         regime=test_regime,
-        title=f"Regime-Aware Forecast ({REGIME_NAMES[test_regime]} Vol Regime)"
+        title=f"Regime-Aware Forecast ({REGIME_NAMES[test_regime]} Vol Regime)",
+        hist_context_bars=100  # Show last 100 bars before cutoff
     )
     fig_vol.write_html("report_with_volatility.html", full_html=True, auto_open=True)
     print("     ✓ Saved: report_with_volatility.html (opened in browser)")

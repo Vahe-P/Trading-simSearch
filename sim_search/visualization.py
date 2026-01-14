@@ -604,7 +604,8 @@ def plot_with_volatility(
     vol_series: Optional[pd.Series] = None,
     title: str = "Forecast with Volatility",
     plot_width: int = 1400,
-    plot_height: int = 800
+    plot_height: int = 800,
+    hist_context_bars: int = 100  # Only show this many bars before cutoff
 ) -> go.Figure:
     """
     Plot forecast with volatility subplot and regime shading.
@@ -618,7 +619,7 @@ def plot_with_volatility(
     forecast_returns : np.ndarray
         Forecasted returns
     window_size : int
-        Number of bars in historical window
+        Number of bars in historical window (used for vol calculation)
     actual_returns : np.ndarray, optional
         Actual returns (if available)
     regime : int
@@ -629,6 +630,9 @@ def plot_with_volatility(
         Plot title
     plot_width, plot_height : int
         Figure dimensions
+    hist_context_bars : int
+        Number of historical bars to show before cutoff (default: 100)
+        This controls how much "context" is visible, not the full pattern length.
         
     Returns
     -------
@@ -637,9 +641,9 @@ def plot_with_volatility(
     """
     from .volatility import garman_klass_volatility, REGIME_NAMES, REGIME_COLORS
     
-    # Get window data
+    # Get window data - only show hist_context_bars before cutoff, not the entire pattern
     cutoff_loc = df.index.get_loc(cutoff)
-    hist_start = max(0, cutoff_loc - window_size)
+    hist_start = max(0, cutoff_loc - hist_context_bars)
     window_df = df.iloc[hist_start:cutoff_loc + 1]
     horizon_size = len(forecast_returns)
     
@@ -671,18 +675,19 @@ def plot_with_volatility(
         row=1, col=1
     )
     
-    # Forecast line
+    # Forecast line - starts at cutoff and projects forward
     last_price = window_df['close'].iloc[-1]
-    forecast_prices = forecast_from_origin(last_price, forecast_returns)
+    forecast_prices = forecast_from_origin(last_price, forecast_returns)  # Returns n+1 elements (origin + forecast)
     
-    # Create forecast index
+    # Create forecast index - must include cutoff to match forecast_prices length
     freq = pd.infer_freq(cast(pd.DatetimeIndex, df.index))
     if freq is None:
         time_deltas = df.index.to_series().diff().dropna()
         median_delta = time_deltas.median()
-        forecast_index = [cutoff + median_delta * (i + 1) for i in range(horizon_size)]
+        # Include cutoff as first point so forecast connects from last historical price
+        forecast_index = [cutoff + median_delta * i for i in range(horizon_size + 1)]
     else:
-        forecast_index = pd.date_range(start=cutoff, periods=horizon_size + 1, freq=freq)[1:]
+        forecast_index = pd.date_range(start=cutoff, periods=horizon_size + 1, freq=freq)
     
     fig.add_trace(
         go.Scatter(
