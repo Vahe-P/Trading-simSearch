@@ -1,7 +1,7 @@
 """
 Visualization utilities for forecast results using Plotly.
 """
-from typing import cast, Optional, Tuple
+from typing import cast, Optional, Tuple, Any, Dict
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -65,13 +65,13 @@ def plot_forecast_bands(
         # Fallback to median time delta if frequency cannot be inferred
         time_deltas = df_original.index.to_series().diff().dropna()
         median_delta: pd.Timedelta = time_deltas.median()  # noqa
-        forecast_index = [cutoff + median_delta * (i + 1) for i in range(horizon_size)]
+        forecast_index = [cutoff + median_delta * i for i in range(horizon_size + 1)]
     else:
         forecast_index = pd.date_range(
             start=cutoff,
             periods=horizon_size + 1,
             freq=freq
-        )[1:]
+        )
 
     # Convert actual returns to prices if provided
     target_actual_px = None
@@ -135,12 +135,6 @@ def plot_forecast_bands(
                 showlegend=True
             ), row=1, col=1)
 
-        # Set x-axis range for main plot to include forecast period
-        # fig.update_xaxes(
-        #     range=[historical_prices.index[0], forecast_index[-1]],
-        #     row=1, col=1
-        # )
-
         # Neighbor subplots
         for i, neighbor_ret in neighbor_horizons.reset_index(drop=True).iterrows():
             # Get neighbor's last price
@@ -181,7 +175,6 @@ def plot_forecast_bands(
                 y=neighbor_hist_prices.values,
                 mode='lines',
                 name=f'Historical {i + 1}',
-                # name=neighbor_label,
                 line=dict(color='blue', width=1),
                 showlegend=False
             ), row=i + 2, col=1)
@@ -192,7 +185,6 @@ def plot_forecast_bands(
                 y=neighbor_prices,
                 mode='lines+markers',
                 name=f'Neighbor {i + 1} Forecast',
-                # name=f'{neighbor_label} Horizon',
                 line=dict(color='red', width=1, dash='dash'),
                 marker=dict(size=4),
                 showlegend=False
@@ -262,25 +254,6 @@ def plot_forecast_bands(
         # Set x-axis range to include forecast period
         fig.update_xaxes(range=[historical_prices.index[0], forecast_index[-1]])
 
-        # Plot regression bands from individual neighbors
-        # if neighbor_horizons is not None and len(neighbor_horizons) > 0:
-        #     for i, neighbor_ret in neighbor_horizons.reset_index(drop=True).iterrows():
-        #         neighbor_prices = [last_price]
-        #         for ret in neighbor_ret:
-        #             neighbor_prices.append(neighbor_prices[-1] * (1 + ret))
-        #         neighbor_prices = neighbor_prices[1:]
-        #
-        #         fig.add_trace(go.Scatter(
-        #             x=forecast_index,
-        #             y=neighbor_prices,
-        #             mode='lines',
-        #             name = f'Historical {i + 1}',
-        #             # name=idx,
-        #             line=dict(width=1, dash='dot'),
-        #             opacity=0.3,
-        #             showlegend=(i < 3)  # Only show first 3 in legend
-        #         ))
-
         # Update layout
         full_title = f"{title}<br><sub>{subtitle}</sub>" if subtitle else title
         fig.update_layout(
@@ -306,7 +279,7 @@ def forecast_from_origin(last_price: float, forecast_returns: np.ndarray) -> lis
     forecast_prices = [last_price]
     for ret in forecast_returns:
         forecast_prices.append(forecast_prices[-1] * (1 + ret))
-    forecast_prices = forecast_prices[1:]  # Remove initial price
+    # Return full list including origin to connect lines
     return forecast_prices
 
 
@@ -317,3 +290,301 @@ def get_window_and_horizon(df: pd.DataFrame, cutoff: pd.Timestamp, window_size: 
     window = df.iloc[window_start:cutoff_loc + 1]['close']
     horizon = df.iloc[cutoff_loc + 1:cutoff_loc + 1 + horizon_len]['close']
     return window, horizon
+
+
+def plot_forecast_with_percentile_bands(
+        cutoff: pd.Timestamp,
+        percentile_bands: dict,
+        window_size: int,
+        df_original: pd.DataFrame,
+        actual_returns: Optional[np.ndarray] = None,
+        score_dict: Optional[dict] = None,
+        title: str = "Market Forecast with Probability Cone",
+        plot_width: int = 1200,
+        plot_height: int = 600,
+        band_color: str = 'rgba(68, 68, 68, 0.3)',
+        median_color: str = 'red',
+        actual_color: str = 'green'
+) -> go.Figure:
+    """
+    Plot forecast with percentile bands (probability cone) using plotly.
+
+    Creates a visualization showing:
+    - Historical prices leading up to cutoff
+    - Median forecast (p50) as the main prediction line
+    - Shaded area between p20 and p80 showing expected range
+    - Actual prices if available for comparison
+
+    Parameters
+    ----------
+    cutoff : pd.Timestamp
+        Forecast origin (last known price point)
+    percentile_bands : dict
+        Dictionary with keys 'p20', 'p50', 'p80' containing return arrays.
+        Typically from calculate_forecast_percentiles()
+    window_size : int
+        Number of historical bars to show before cutoff
+    df_original : pd.DataFrame
+        Original price data with 'close' column
+    actual_returns : np.ndarray, optional
+        Actual returns for comparison (if available)
+    score_dict : dict, optional
+        Score metrics to display in subtitle
+    title : str
+        Plot title
+    plot_width : int
+        Plot width in pixels
+    plot_height : int
+        Plot height in pixels
+    band_color : str
+        Fill color for percentile band (RGBA format)
+    median_color : str
+        Color for median forecast line
+    actual_color : str
+        Color for actual price line
+
+    Returns
+    -------
+    go.Figure
+        Plotly figure object
+    """
+    # Validate percentile bands
+    required_keys = ['p20', 'p50', 'p80']
+    for key in required_keys:
+        if key not in percentile_bands:
+            raise ValueError(f"percentile_bands must contain '{key}'. Got keys: {list(percentile_bands.keys())}")
+
+    horizon_size = len(percentile_bands['p50'])
+    
+    # Get historical window and last price
+    test_window, _ = get_window_and_horizon(df_original, cutoff, window_size, horizon_size)
+    last_price = test_window.iloc[-1]
+
+    # Convert returns to prices for each percentile
+    p20_prices = forecast_from_origin(last_price, percentile_bands['p20'])
+    p50_prices = forecast_from_origin(last_price, percentile_bands['p50'])
+    p80_prices = forecast_from_origin(last_price, percentile_bands['p80'])
+
+    # Create future index
+    freq = pd.infer_freq(cast(pd.DatetimeIndex, df_original.index))
+    if freq is None:
+        time_deltas = df_original.index.to_series().diff().dropna()
+        median_delta: pd.Timedelta = time_deltas.median()
+        forecast_index = [cutoff + median_delta * i for i in range(horizon_size + 1)]
+    else:
+        forecast_index = pd.date_range(
+            start=cutoff,
+            periods=horizon_size + 1,
+            freq=freq
+        )
+
+    # Convert actual returns to prices if provided
+    actual_prices = None
+    if actual_returns is not None:
+        actual_prices = forecast_from_origin(last_price, actual_returns)
+
+    # Create subtitle with score if provided
+    subtitle = ""
+    if score_dict is not None:
+        subtitle = f"RMSE: {score_dict['rmse']:.4f} | MAE: {score_dict['mae']:.4f} | R²: {score_dict['r2']:.4f}"
+
+    # Create figure
+    fig = go.Figure()
+
+    # Get historical prices
+    cutoff_loc = df_original.index.get_loc(cutoff)
+    hist_start = max(0, cutoff_loc - window_size)
+    historical_prices = df_original.iloc[hist_start:cutoff_loc + 1]['close']
+
+    # Plot historical prices
+    fig.add_trace(go.Scatter(
+        x=historical_prices.index,
+        y=historical_prices.values,
+        mode='lines',
+        name='Historical Close',
+        line=dict(color='blue', width=2)
+    ))
+
+    # Plot p20 (lower bound) - invisible line as base for fill
+    fig.add_trace(go.Scatter(
+        x=forecast_index,
+        y=p20_prices,
+        mode='lines',
+        name='20th Percentile',
+        line=dict(color='rgba(0,0,0,0)', width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+
+    # Plot p80 (upper bound) with fill to p20
+    fig.add_trace(go.Scatter(
+        x=forecast_index,
+        y=p80_prices,
+        mode='lines',
+        name='20-80 Percentile Range',
+        line=dict(color='rgba(0,0,0,0)', width=0),
+        fill='tonexty',
+        fillcolor=band_color,
+        hovertemplate='Upper: %{y:.2f}<extra></extra>'
+    ))
+
+    # Plot p50 (median) as main forecast
+    fig.add_trace(go.Scatter(
+        x=forecast_index,
+        y=p50_prices,
+        mode='lines+markers',
+        name='Median Forecast (p50)',
+        line=dict(color=median_color, width=2, dash='dash'),
+        marker=dict(size=6),
+        hovertemplate='Median: %{y:.2f}<extra></extra>'
+    ))
+
+    # Plot actual prices if available
+    if actual_prices is not None:
+        fig.add_trace(go.Scatter(
+            x=forecast_index,
+            y=actual_prices,
+            mode='lines+markers',
+            name='Actual',
+            line=dict(color=actual_color, width=2),
+            marker=dict(size=6),
+            hovertemplate='Actual: %{y:.2f}<extra></extra>'
+        ))
+
+    # Extend x-axis to include forecast period
+    fig.update_xaxes(range=[historical_prices.index[0], forecast_index[-1]])
+
+    # Update layout
+    full_title = f"{title}<br><sub>{subtitle}</sub>" if subtitle else title
+    fig.update_layout(
+        title=full_title,
+        xaxis_title='Time',
+        yaxis_title='Price',
+        hovermode='x unified',
+        template='plotly_white',
+        height=plot_height,
+        width=plot_width,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
+    )
+
+    return fig
+
+
+def plot_forecast_clusters(
+        cutoff: pd.Timestamp,
+        cluster_data: Dict[str, Any],
+        window_size: int,
+        df_original: pd.DataFrame,
+        actual_returns: Optional[np.ndarray] = None,
+        title: str = "Forecast Scenarios (Clustered Paths)",
+        plot_width: int = 1200,
+        plot_height: int = 600
+) -> go.Figure:
+    """
+    Plot distinct forecast scenarios identified by clustering.
+    
+    Parameters
+    ----------
+    cutoff : pd.Timestamp
+        Forecast origin
+    cluster_data : dict
+        Results from forecast_clusters() containing 'centers', 'probabilities', etc.
+    window_size : int
+        Historical window size
+    df_original : pd.DataFrame
+        Original price data
+    actual_returns : array-like, optional
+        Actual returns
+    """
+    centers = cluster_data['centers']  # Shape (k, horizon)
+    probs = cluster_data['probabilities']
+    n_clusters = len(probs)
+    horizon_size = centers.shape[1]
+    
+    # Get historical window and last price
+    test_window, _ = get_window_and_horizon(df_original, cutoff, window_size, horizon_size)
+    last_price = test_window.iloc[-1]
+    
+    # Create future index
+    freq = pd.infer_freq(cast(pd.DatetimeIndex, df_original.index))
+    if freq is None:
+        time_deltas = df_original.index.to_series().diff().dropna()
+        median_delta: pd.Timedelta = time_deltas.median()
+        forecast_index = [cutoff + median_delta * i for i in range(horizon_size + 1)]
+    else:
+        forecast_index = pd.date_range(start=cutoff, periods=horizon_size+1, freq=freq)
+        
+    # Create Figure
+    fig = go.Figure()
+    
+    # Plot history
+    cutoff_loc = df_original.index.get_loc(cutoff)
+    hist_start = max(0, cutoff_loc - window_size)
+    historical_prices = df_original.iloc[hist_start:cutoff_loc + 1]['close']
+    
+    fig.add_trace(go.Scatter(
+        x=historical_prices.index,
+        y=historical_prices.values,
+        mode='lines',
+        name='Historical Close',
+        line=dict(color='blue', width=2)
+    ))
+    
+    # Color map for clusters (Red -> Green -> Blue ish)
+    # Simple predefined colors
+    colors = ['#FF4136', '#2ECC40', '#0074D9', '#FF851B', '#B10DC9']
+    
+    # Plot each cluster center
+    for i in range(n_clusters):
+        center_returns = centers[i]
+        prob = probs[i]
+        
+        # Convert returns to prices
+        scenario_prices = forecast_from_origin(last_price, center_returns)
+        
+        color = colors[i % len(colors)]
+        
+        fig.add_trace(go.Scatter(
+            x=forecast_index,
+            y=scenario_prices,
+            mode='lines+markers',
+            name=f'Scenario {i+1} ({prob:.1%})',
+            line=dict(color=color, width=2, dash='solid'),
+            marker=dict(size=4),
+            hovertemplate=f'Scenario {i+1}: %{{y:.2f}} (Prob: {prob:.1%})<extra></extra>'
+        ))
+        
+    # Plot actual
+    if actual_returns is not None:
+         actual_prices = forecast_from_origin(last_price, actual_returns)
+         fig.add_trace(go.Scatter(
+            x=forecast_index,
+            y=actual_prices,
+            mode='lines+markers',
+            name='Actual',
+            line=dict(color='black', width=3, dash='dot'),
+            marker=dict(size=6)
+        ))
+         
+    fig.update_layout(
+        title=f"{title} - {n_clusters} Distinct Paths Found",
+        xaxis_title='Time',
+        yaxis_title='Price',
+        hovermode='x unified',
+        template='plotly_white',
+        height=plot_height,
+        width=plot_width,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
+    )
+    
+    return fig

@@ -2,6 +2,7 @@
 Forecasting utilities using sktime KNeighborsTimeSeriesRegressor with DTW.
 """
 
+from typing import Dict, List, Optional, Tuple, Union, Any
 import pandas as pd
 import numpy as np
 from aeon.regression.distance_based import KNeighborsTimeSeriesRegressor
@@ -9,6 +10,7 @@ from aeon.distances import dtw_distance
 from loguru import logger
 
 from .windowing import normalize_window
+from .clustering import cluster_paths
 
 
 def prepare_panel_data(df: pd.DataFrame, intervals: pd.IntervalIndex, feature_col='close', horizon_len: int = 1,
@@ -179,6 +181,85 @@ def forecast_from_neighbors(horizons: list[np.ndarray], distances: np.ndarray, i
     else:
         raise ValueError(f"Unknown forecast implementation: {impl}")
     return forecast
+
+
+def calculate_forecast_percentiles(horizons: np.ndarray, 
+                                   percentiles: list[int] = None) -> dict:
+    """
+    Calculate percentile bands from neighbor forecast horizons.
+
+    Use this to create probability cones showing the distribution of
+    possible future paths based on historical similar patterns.
+
+    Parameters
+    ----------
+    horizons : np.ndarray
+        Array of shape (n_neighbors, horizon_len) containing forecast 
+        horizons from each neighbor
+    percentiles : list[int], optional
+        Percentiles to calculate (default: [20, 50, 80])
+        - p20: lower bound of expected range
+        - p50: median forecast
+        - p80: upper bound of expected range
+
+    Returns
+    -------
+    dict
+        Dictionary with keys like 'p20', 'p50', 'p80' containing arrays
+        of length horizon_len
+
+    Examples
+    --------
+    >>> horizons = np.array([[0.01, 0.02], [0.02, 0.01], [-0.01, 0.03]])
+    >>> bands = calculate_forecast_percentiles(horizons)
+    >>> bands['p50']  # Median forecast
+    array([0.01, 0.02])
+    """
+    if percentiles is None:
+        percentiles = [20, 50, 80]
+    
+    # Ensure horizons is a numpy array
+    if isinstance(horizons, pd.DataFrame):
+        horizons = horizons.to_numpy()
+    elif not isinstance(horizons, np.ndarray):
+        horizons = np.array(horizons)
+    
+    result = {}
+    for p in percentiles:
+        result[f'p{p}'] = np.percentile(horizons, p, axis=0)
+    
+    return result
+
+
+def forecast_clusters(horizons: Union[np.ndarray, pd.DataFrame, List[pd.Series]], 
+                     max_k: int = 3, min_k: int = 2) -> Dict[str, Any]:
+    """
+    Cluster neighbor future paths into distinct scenarios.
+    
+    Parameters
+    ----------
+    horizons : array-like
+        Collection of future return paths from neighbors
+    max_k : int
+        Max clusters
+    min_k : int
+        Min clusters
+        
+    Returns
+    -------
+    dict
+        Clustering results (labels, centers, probs, score)
+    """
+    # Ensure numpy array
+    if isinstance(horizons, pd.DataFrame):
+        data = horizons.to_numpy()
+    elif isinstance(horizons, list):
+        # Handle list of Series or arrays
+        data = np.vstack([np.array(x) for x in horizons])
+    else:
+        data = np.array(horizons)
+        
+    return cluster_paths(data, max_k=max_k, min_k=min_k)
 
 
 def score_forecast(y_pred, y_true):

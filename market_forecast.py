@@ -12,10 +12,14 @@ from pathlib import Path
 
 from sim_search.config import ForecastConfig
 from sim_search.forecaster import (prepare_panel_data, similarity_search,
-                                      forecast_from_neighbors, score_forecast
+                                      forecast_from_neighbors, score_forecast,
+                                      calculate_forecast_percentiles,
+                                      forecast_clusters
                                       )
 from sim_search.times import set_default_tz, resample
-from sim_search.visualization import plot_forecast_bands
+from sim_search.visualization import (plot_forecast_bands, 
+                                    plot_forecast_with_percentile_bands,
+                                    plot_forecast_clusters)
 from sim_search.windowing import partition_time_anchored
 
 
@@ -124,7 +128,14 @@ def main():
     # Get neighbor labels (cutoffs)
     neighbor_labels_for_plot = [labels[idx] for idx in neighbor_indices]
 
-    # Plot results
+    # Calculate percentile bands for probability cone
+    print("\nCalculating percentile bands...")
+    percentile_bands = calculate_forecast_percentiles(neighbor_horizons.to_numpy())
+    print(f"  P20 range: [{percentile_bands['p20'].min():.4%}, {percentile_bands['p20'].max():.4%}]")
+    print(f"  P50 range: [{percentile_bands['p50'].min():.4%}, {percentile_bands['p50'].max():.4%}]")
+    print(f"  P80 range: [{percentile_bands['p80'].min():.4%}, {percentile_bands['p80'].max():.4%}]")
+
+    # Plot results - Original neighbor subplots view
     print("\nCreating visualization...")
     fig = plot_forecast_bands(
         cutoff=test_cutoff,
@@ -142,9 +153,53 @@ def main():
     )
     fig.write_html(
         "report.html",
-        full_html=True,  # make a complete HTML page
-        auto_open=True  # opens it in your default browser
+        full_html=True,
+        auto_open=False
     )
+    print("  Saved report.html (neighbor subplots)")
+
+    # Plot results - New percentile bands probability cone
+    fig_bands = plot_forecast_with_percentile_bands(
+        cutoff=test_cutoff,
+        percentile_bands=percentile_bands,
+        window_size=window_size,
+        df_original=df,
+        actual_returns=actual_returns,
+        score_dict=score_dict,
+        title=f"Probability Cone - {config.distance_metric.upper()} (k={config.n_neighbors})",
+        plot_width=config.plot_width,
+        plot_height=config.plot_height
+    )
+    fig_bands.write_html(
+        "report_percentile_bands.html",
+        full_html=True,
+        auto_open=True  # Open this one in browser
+    )
+    print("  Saved report_percentile_bands.html (probability cone)")
+
+    # Plot results - Clustered Scenarios
+    print("\nCalculating forecast clusters (scenarios)...")
+    cluster_data = forecast_clusters(neighbor_horizons)
+    print(f"  Found {cluster_data['n_clusters']} distinct scenarios")
+    for i, prob in enumerate(cluster_data['probabilities']):
+        print(f"    Scenario {i+1}: {prob:.1%}")
+
+    fig_clusters = plot_forecast_clusters(
+        cutoff=test_cutoff,
+        cluster_data=cluster_data,
+        window_size=window_size,
+        df_original=df,
+        actual_returns=actual_returns,
+        title=f"Forecast Scenarios - {config.distance_metric.upper()} (k={config.n_neighbors})",
+        plot_width=config.plot_width,
+        plot_height=config.plot_height
+    )
+    fig_clusters.write_html(
+        "report_clusters.html",
+        full_html=True,
+        auto_open=False
+    )
+    print("  Saved report_clusters.html (distinct scenarios)")
     print("\nForecast complete!")
 
 

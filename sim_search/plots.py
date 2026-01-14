@@ -13,7 +13,6 @@ def create_chart_impl(chart: AbstractChart, window: Window, show_projection: boo
     else:
         line = chart.create_line()
         data = window.data
-        # data = window.data.squeeze()
         if not show_projection and window.train_cutoff:
             line.set(data.loc[:window.train_cutoff])
         else:
@@ -21,16 +20,6 @@ def create_chart_impl(chart: AbstractChart, window: Window, show_projection: boo
     if window.train_cutoff:
         chart.vertical_span(window.train_cutoff, color='#E8F2FD')
     chart.fit()
-
-#
-# def create_chart_impl(chart: AbstractChart, window: Window, show_projection: bool):
-#     if not show_projection and window.train_cutoff:
-#         chart.set(window.data.loc[:window.train_cutoff])
-#     else:
-#         chart.set(window.data)
-#     if window.train_cutoff:
-#         chart.vertical_span(window.train_cutoff, color='#E8F2FD')
-#     chart.fit()
 
 
 def window_chart(window: Window, show_projection: bool = True, width: int = 800,

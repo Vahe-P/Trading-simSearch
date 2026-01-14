@@ -1,0 +1,16 @@
+{
+    "data_path": "data/test/NQ_2024-09-06_2025-09-13.parquet",
+    "window_start_time": "08:00:00",
+    "window_end_time": "09:30:00",
+    "extend_sessions": 1,
+    "forecast_horizon": 30,
+    "n_neighbors": 15,
+    "distance_metric": "euclidean",
+    "norm_method": "pct_change",
+    "min_train_windows": 30,
+    "tp_threshold": 0.005,
+    "sl_threshold": 0.005,
+    "resample": "5min",
+    "timezone": "America/New_York",
+    "max_test_days": 40
+}
