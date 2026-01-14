@@ -143,9 +143,26 @@ class WindowCollection:
     
     @property
     def x_array(self) -> np.ndarray:
-        """Get X data as numpy array, shape (n_windows, n_features, n_timepoints)."""
+        """Get X data as numpy array, shape (n_windows, n_features, n_timepoints).
+        
+        Handles windows with different lengths by padding shorter ones with zeros.
+        """
         if self._x_array is None and self.windows:
-            self._x_array = np.stack([w.x for w in self.windows], axis=0)
+            # Find max length
+            max_len = max(w.x.shape[-1] for w in self.windows)
+            
+            # Pad all to same length
+            padded = []
+            for w in self.windows:
+                if w.x.shape[-1] < max_len:
+                    pad_width = max_len - w.x.shape[-1]
+                    # Pad at the beginning (older data gets zeros)
+                    padded_x = np.pad(w.x, ((0, 0), (pad_width, 0)), mode='constant', constant_values=0)
+                else:
+                    padded_x = w.x
+                padded.append(padded_x)
+            
+            self._x_array = np.stack(padded, axis=0)
         return self._x_array
     
     @property
