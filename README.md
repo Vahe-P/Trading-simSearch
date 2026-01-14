@@ -127,16 +127,101 @@ fig.write_html("report_with_vol.html", auto_open=True)
 
 ```
 sim_search/
+├── datastructures.py  # WindowData, WindowCollection (NEW)
+├── filters.py         # RegimeFilter, CalendarFilter, FilterPipeline (NEW)
+├── builder.py         # WindowCollectionBuilder - fluent API (NEW)
+├── calendar_events.py # FOMC, CPI, NFP dates (NEW)
 ├── backtester.py      # Walk-forward backtesting engine
 ├── forecaster.py      # KNN similarity search + regime-aware search
-├── volatility.py      # GK/Parkinson volatility + regime classification (NEW)
+├── volatility.py      # GK/Parkinson volatility + regime classification
 ├── windowing.py       # Window partitioning utilities
-├── visualization.py   # Plotly charts with volatility subplot (NEW)
+├── visualization.py   # Plotly charts with volatility subplot
 ├── optimizer.py       # Grid search optimization
 ├── clustering.py      # Future path clustering
 └── config.py          # Configuration management
 
-compare_strategies.py  # A/B test baseline vs regime-aware (NEW)
+compare_strategies.py  # A/B test baseline vs regime-aware
+market_forecast.py     # Main forecast script with strategy comparison
+```
+
+## New Abstractions (Pluggable Filter System)
+
+### Data Structures
+
+Instead of parallel arrays that must stay aligned, we now bundle everything in `WindowData`:
+
+```python
+from sim_search import WindowData, WindowCollection
+
+# Each window has all data together
+window = WindowData(
+    idx=0,
+    x=pattern_array,           # Normalized pattern
+    y=future_returns,          # Forecast horizon
+    cutoff=timestamp,          # Label
+    volatility=0.0003,         # GK volatility
+    regime=1,                  # LOW=0, MED=1, HIGH=2
+    is_fomc_day=False,         # Calendar events
+    days_since_fomc=5,
+)
+```
+
+### Pluggable Filters (sklearn-compatible)
+
+Filters follow sklearn's transformer API and can be chained:
+
+```python
+from sim_search import RegimeFilter, CalendarFilter, FilterPipeline
+
+# Create filter pipeline
+pipeline = FilterPipeline([
+    RegimeFilter(enabled=True, vol_method='garman_klass'),
+    CalendarFilter(match_fomc_context=True, exclude_red_folder=False),
+])
+
+# Fit on training data
+pipeline.fit(train_collection)
+
+# Get filtered indices for a query
+indices = pipeline.transform(train_collection, query=test_window)
+```
+
+### Builder Pattern
+
+Fluent builder for creating enriched collections:
+
+```python
+from sim_search import WindowCollectionBuilder
+from datetime import time
+
+builder = WindowCollectionBuilder(df)
+collection = (builder
+    .with_time_anchored_windows(time(8), time(9, 30), extend_sessions=1)
+    .with_horizon(20)
+    .with_normalization('log_returns')
+    .with_volatility('garman_klass')
+    .with_calendar_events()  # FOMC, CPI, NFP
+    .build())
+
+# Easy train/test split
+train, test = collection.split_train_test()
+
+# Filter by regime
+same_regime = train.filter_by_regime(test.regime)
+```
+
+### Calendar Events
+
+Built-in FOMC, CPI, NFP dates for filtering:
+
+```python
+from sim_search import is_fomc_day, days_since_fomc
+
+# Check if date is FOMC day
+is_fomc_day(timestamp)  # True/False
+
+# Days since last FOMC
+days_since_fomc(timestamp)  # e.g., 5
 ```
 
 ## Improvements Over Baseline
