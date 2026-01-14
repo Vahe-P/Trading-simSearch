@@ -588,3 +588,203 @@ def plot_forecast_clusters(
     )
     
     return fig
+
+
+# =============================================================================
+# VOLATILITY VISUALIZATION (NEW)
+# =============================================================================
+
+def plot_with_volatility(
+    df: pd.DataFrame,
+    cutoff: pd.Timestamp,
+    forecast_returns: np.ndarray,
+    window_size: int,
+    actual_returns: Optional[np.ndarray] = None,
+    regime: int = -1,
+    vol_series: Optional[pd.Series] = None,
+    title: str = "Forecast with Volatility",
+    plot_width: int = 1400,
+    plot_height: int = 800
+) -> go.Figure:
+    """
+    Plot forecast with volatility subplot and regime shading.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        OHLC data with datetime index
+    cutoff : pd.Timestamp
+        Forecast cutoff point
+    forecast_returns : np.ndarray
+        Forecasted returns
+    window_size : int
+        Number of bars in historical window
+    actual_returns : np.ndarray, optional
+        Actual returns (if available)
+    regime : int
+        Query regime: 0=LOW, 1=MED, 2=HIGH, -1=not computed
+    vol_series : pd.Series, optional
+        Pre-computed volatility series (if None, computed from OHLC)
+    title : str
+        Plot title
+    plot_width, plot_height : int
+        Figure dimensions
+        
+    Returns
+    -------
+    go.Figure
+        Plotly figure with price and volatility subplots
+    """
+    from .volatility import garman_klass_volatility, REGIME_NAMES, REGIME_COLORS
+    
+    # Get window data
+    cutoff_loc = df.index.get_loc(cutoff)
+    hist_start = max(0, cutoff_loc - window_size)
+    window_df = df.iloc[hist_start:cutoff_loc + 1]
+    horizon_size = len(forecast_returns)
+    
+    # Create figure with subplots
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.7, 0.3],
+        subplot_titles=['Price Chart with Regime', 'Realized Volatility (Garman-Klass)']
+    )
+    
+    # =========================================================================
+    # ROW 1: PRICE CHART
+    # =========================================================================
+    
+    # Historical prices (candlestick)
+    fig.add_trace(
+        go.Candlestick(
+            x=window_df.index,
+            open=window_df['open'],
+            high=window_df['high'],
+            low=window_df['low'],
+            close=window_df['close'],
+            name='OHLC',
+            increasing_line_color='#26A69A',
+            decreasing_line_color='#EF5350'
+        ),
+        row=1, col=1
+    )
+    
+    # Forecast line
+    last_price = window_df['close'].iloc[-1]
+    forecast_prices = forecast_from_origin(last_price, forecast_returns)
+    
+    # Create forecast index
+    freq = pd.infer_freq(cast(pd.DatetimeIndex, df.index))
+    if freq is None:
+        time_deltas = df.index.to_series().diff().dropna()
+        median_delta = time_deltas.median()
+        forecast_index = [cutoff + median_delta * (i + 1) for i in range(horizon_size)]
+    else:
+        forecast_index = pd.date_range(start=cutoff, periods=horizon_size + 1, freq=freq)[1:]
+    
+    fig.add_trace(
+        go.Scatter(
+            x=forecast_index,
+            y=forecast_prices,
+            mode='lines+markers',
+            name='Forecast',
+            line=dict(color='red', width=2, dash='dash'),
+            marker=dict(size=6)
+        ),
+        row=1, col=1
+    )
+    
+    # Actual if provided
+    if actual_returns is not None:
+        actual_prices = forecast_from_origin(last_price, actual_returns)
+        fig.add_trace(
+            go.Scatter(
+                x=forecast_index,
+                y=actual_prices,
+                mode='lines+markers',
+                name='Actual',
+                line=dict(color='green', width=2),
+                marker=dict(size=6)
+            ),
+            row=1, col=1
+        )
+    
+    # Add regime shading
+    if regime >= 0 and regime in REGIME_COLORS:
+        fig.add_vrect(
+            x0=window_df.index[0],
+            x1=forecast_index[-1] if len(forecast_index) > 0 else cutoff,
+            fillcolor=REGIME_COLORS[regime],
+            layer='below',
+            line_width=0,
+            row=1, col=1
+        )
+    
+    # =========================================================================
+    # ROW 2: VOLATILITY SUBPLOT
+    # =========================================================================
+    
+    # Compute volatility if not provided
+    if vol_series is None:
+        gk_var = garman_klass_volatility(
+            window_df['open'], window_df['high'], 
+            window_df['low'], window_df['close']
+        )
+        vol_series = np.sqrt(gk_var.rolling(20).mean()) * 100  # As percentage
+    else:
+        vol_series = vol_series.loc[window_df.index[0]:window_df.index[-1]]
+    
+    fig.add_trace(
+        go.Scatter(
+            x=vol_series.index,
+            y=vol_series.values,
+            fill='tozeroy',
+            name='GK Volatility',
+            line=dict(color='purple', width=1),
+            fillcolor='rgba(128, 0, 128, 0.3)'
+        ),
+        row=2, col=1
+    )
+    
+    # Add regime threshold lines
+    if len(vol_series) > 0:
+        vol_median = vol_series.median()
+        vol_75 = vol_series.quantile(0.67)
+        
+        fig.add_hline(
+            y=vol_median, line_dash="dash", line_color="gray",
+            annotation_text="Median", row=2, col=1
+        )
+        fig.add_hline(
+            y=vol_75, line_dash="dash", line_color="red",
+            annotation_text="High Vol Threshold", row=2, col=1
+        )
+    
+    # =========================================================================
+    # LAYOUT
+    # =========================================================================
+    
+    regime_text = f" | Regime: {REGIME_NAMES.get(regime, 'N/A')}" if regime >= 0 else ""
+    
+    fig.update_layout(
+        title=f"{title}{regime_text}",
+        height=plot_height,
+        width=plot_width,
+        template='plotly_white',
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=0.01
+        )
+    )
+    
+    fig.update_yaxes(title_text='Price', row=1, col=1)
+    fig.update_yaxes(title_text='Volatility (%)', row=2, col=1)
+    fig.update_xaxes(title_text='Time', row=2, col=1)
+    
+    return fig

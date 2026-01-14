@@ -22,9 +22,10 @@ from tqdm import tqdm
 
 from .config import ForecastConfig
 from .forecaster import (
-    prepare_panel_data, similarity_search, 
+    prepare_panel_data, similarity_search, regime_aware_similarity_search,
     forecast_from_neighbors, score_forecast, calculate_forecast_percentiles
 )
+from .volatility import REGIME_NAMES, log_regime_distribution
 from .windowing import partition_sliding
 from .times import set_default_tz, resample
 
@@ -37,6 +38,10 @@ class TradeResult:
     actual_returns: np.ndarray  # Actual returns
     percentile_bands: dict  # p20, p50, p80
     neighbor_distances: np.ndarray  # Distances to neighbors
+    
+    # Regime information (NEW)
+    regime: int = -1  # Query regime: 0=LOW, 1=MED, 2=HIGH, -1=not computed
+    same_regime_count: int = 0  # How many neighbors from same regime
     
     # Calculated metrics
     rmse: float = 0.0
@@ -197,6 +202,7 @@ class BacktestResult:
             'StepSize': self.config.get('step_size'),
             'Metric': self.config.get('distance_metric'),
             'K': self.config.get('n_neighbors'),
+            'RegimeFilter': self.config.get('use_regime_filter', False),
             
             # Key Metrics
             'Avg_RMSE': self.avg_rmse,
@@ -220,6 +226,8 @@ class BacktestResult:
             'n_neighbors': self.config.get('n_neighbors'),
             'forecast_horizon': self.config.get('forecast_horizon'),
             'norm_method': self.config.get('norm_method'),
+            'use_regime_filter': self.config.get('use_regime_filter', False),
+            'vol_method': self.config.get('vol_method', 'garman_klass'),
             
             # Metrics
             'total_trades': self.total_trades,
@@ -259,6 +267,11 @@ class BacktestConfig:
     n_neighbors: int = 5
     distance_metric: str = 'euclidean'
     norm_method: str = 'log_returns'
+    
+    # Regime-aware settings (NEW)
+    use_regime_filter: bool = False  # Enable two-stage regime filtering
+    vol_method: str = 'garman_klass'  # Volatility estimator: 'garman_klass' or 'parkinson'
+    min_same_regime: int = 5  # Minimum windows in same regime before fallback
     
     # Test settings
     min_train_windows: int = 30
@@ -383,14 +396,35 @@ class Backtester:
                 x_train_list = [pd.DataFrame(x) for x in x_train]
                 x_test_df = pd.DataFrame(x_test[0])
                 
-                idx, dists = similarity_search(
-                    x_train_list, 
-                    np.zeros(len(x_train_list)),  # Dummy y for fitting
-                    x_test_df,
-                    n_neighbors=self.config.n_neighbors,
-                    impl='knn',
-                    distance=self.config.distance_metric
-                )
+                query_regime = -1
+                same_regime_count = 0
+                
+                if self.config.use_regime_filter:
+                    # NEW: Two-stage regime-aware search
+                    idx, dists, query_regime, all_regimes = regime_aware_similarity_search(
+                        x_train_list,
+                        y_train,
+                        x_test_df,
+                        df=df,
+                        intervals=windows,
+                        query_idx=i,
+                        n_neighbors=self.config.n_neighbors,
+                        distance=self.config.distance_metric,
+                        vol_method=self.config.vol_method,
+                        min_same_regime=self.config.min_same_regime
+                    )
+                    # Count how many neighbors are from same regime
+                    same_regime_count = np.sum(all_regimes[idx] == query_regime)
+                else:
+                    # Original: Standard similarity search
+                    idx, dists = similarity_search(
+                        x_train_list, 
+                        np.zeros(len(x_train_list)),  # Dummy y for fitting
+                        x_test_df,
+                        n_neighbors=self.config.n_neighbors,
+                        impl='knn',
+                        distance=self.config.distance_metric
+                    )
                 
                 # Forecast from neighbors
                 neighbor_horizons = y_train[idx]
@@ -407,7 +441,9 @@ class Backtester:
                     actual_returns=y_test,
                     percentile_bands=bands,
                     neighbor_distances=dists,
-                    hit_tp=hit_tp
+                    hit_tp=hit_tp,
+                    regime=query_regime,
+                    same_regime_count=same_regime_count
                 )
                 result.trades.append(trade)
                 

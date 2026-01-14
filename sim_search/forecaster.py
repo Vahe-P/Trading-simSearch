@@ -1,5 +1,13 @@
 """
-Forecasting utilities using sktime KNeighborsTimeSeriesRegressor with DTW.
+Forecasting utilities using aeon KNeighborsTimeSeriesRegressor.
+
+Supports multiple distance metrics including:
+- DTW (Dynamic Time Warping)
+- WDTW (Weighted DTW) - applies more weight to recent bars automatically
+- Euclidean - fast but no time warping
+
+NEW: Regime-aware similarity search that filters to same volatility regime
+before running KNN, ensuring we only compare patterns from similar market conditions.
 """
 
 from typing import Dict, List, Optional, Tuple, Union, Any
@@ -11,6 +19,15 @@ from loguru import logger
 
 from .windowing import normalize_window
 from .clustering import cluster_paths
+from .volatility import (
+    compute_all_window_volatilities,
+    compute_regime_thresholds,
+    classify_regime,
+    classify_all_regimes,
+    get_same_regime_indices,
+    log_regime_distribution,
+    REGIME_NAMES
+)
 
 
 def prepare_panel_data(df: pd.DataFrame, intervals: pd.IntervalIndex, feature_col='close', horizon_len: int = 1,
@@ -147,6 +164,136 @@ def similarity_search(x_train, y_train, x_test, n_neighbors=5, impl='knn', dista
         return indices[0], distances[0]
     else:
         raise ValueError(f"Unknown similarity search implementation: {impl}")
+
+
+def regime_aware_similarity_search(
+    x_train: List,
+    y_train: np.ndarray,
+    x_test,
+    df: pd.DataFrame,
+    intervals: pd.IntervalIndex,
+    query_idx: int,
+    n_neighbors: int = 10,
+    distance: str = 'wdtw',
+    distance_params: Optional[dict] = None,
+    vol_method: str = 'garman_klass',
+    min_same_regime: int = 5
+) -> Tuple[np.ndarray, np.ndarray, int, np.ndarray]:
+    """
+    Two-stage similarity search with regime filtering.
+    
+    Stage 1: Filter windows to same volatility regime (no distance computation)
+    Stage 2: Run KNN with WDTW on filtered windows only
+    
+    This ensures we only compare patterns from similar market conditions.
+    A 2% drop in low-vol is very different from 2% in high-vol (think FOMC days).
+    
+    Parameters
+    ----------
+    x_train : list
+        Training panel data (list of DataFrames)
+    y_train : np.ndarray
+        Training targets
+    x_test : DataFrame
+        Test data (query window)
+    df : pd.DataFrame
+        Original OHLC data for volatility computation
+    intervals : pd.IntervalIndex
+        Window intervals
+    query_idx : int
+        Index of query window in intervals
+    n_neighbors : int
+        Number of neighbors to find
+    distance : str
+        Distance metric: 'wdtw' (recommended), 'dtw', 'euclidean'
+    distance_params : dict, optional
+        Parameters for distance metric (e.g., {'g': 0.05} for wdtw)
+    vol_method : str
+        Volatility method: 'garman_klass' or 'parkinson'
+    min_same_regime : int
+        Minimum windows required in same regime before fallback to all
+        
+    Returns
+    -------
+    tuple
+        (neighbor_indices, neighbor_distances, query_regime, all_regimes)
+        - neighbor_indices: indices into ORIGINAL x_train (not filtered)
+        - neighbor_distances: distances to neighbors
+        - query_regime: 0=LOW, 1=MED, 2=HIGH
+        - all_regimes: regime labels for all training windows
+    """
+    n_train = len(x_train)
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STAGE 1: REGIME FILTER (no DTW here - just volatility classification)
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    # Compute volatility for all windows (training + query)
+    all_intervals = intervals[:query_idx + 1]  # Include query
+    all_vols = compute_all_window_volatilities(df, all_intervals, method=vol_method)
+    
+    train_vols = all_vols[:query_idx]  # Training windows only
+    query_vol = all_vols[query_idx]    # Query window
+    
+    # Compute thresholds from training data only (no look-ahead)
+    thresholds = compute_regime_thresholds(train_vols)
+    
+    # Classify all windows
+    train_regimes = classify_all_regimes(train_vols, thresholds)
+    query_regime = classify_regime(query_vol, thresholds)
+    
+    # Get same-regime indices
+    same_regime_idx = get_same_regime_indices(train_regimes, query_regime)
+    
+    logger.debug(
+        f"Regime filter: Query={REGIME_NAMES[query_regime]} (vol={query_vol:.4f}), "
+        f"Same regime: {len(same_regime_idx)}/{n_train} windows"
+    )
+    
+    # Fallback if not enough windows in same regime
+    if len(same_regime_idx) < min_same_regime:
+        logger.warning(
+            f"Only {len(same_regime_idx)} windows in regime {REGIME_NAMES[query_regime]}, "
+            f"falling back to all {n_train} windows"
+        )
+        same_regime_idx = np.arange(n_train)
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STAGE 2: KNN with WDTW on filtered set only
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    # Filter training data to same regime
+    x_filtered = [x_train[i] for i in same_regime_idx]
+    y_filtered = y_train[same_regime_idx] if y_train is not None else None
+    
+    # Set default distance params for WDTW
+    if distance_params is None and distance == 'wdtw':
+        distance_params = {'g': 0.05}  # Moderate tail weighting
+    
+    # Run KNN on filtered set
+    k = min(n_neighbors, len(x_filtered))
+    
+    forecaster = KNeighborsTimeSeriesRegressor(
+        n_neighbors=k,
+        weights='uniform',
+        distance=distance,
+        distance_params=distance_params
+    )
+    
+    # Fit on filtered data
+    dummy_y = np.zeros(len(x_filtered)) if y_filtered is None else y_filtered
+    if len(dummy_y.shape) > 1:
+        dummy_y = dummy_y[:, 0]  # Use first column if multi-output
+    
+    forecaster.fit(x_filtered, dummy_y)
+    
+    # Get neighbors
+    distances, indices = forecaster.kneighbors([x_test])
+    
+    # Map filtered indices back to original indices
+    original_indices = same_regime_idx[indices[0]]
+    
+    return original_indices, distances[0], query_regime, train_regimes
 
 
 def forecast_from_neighbors(horizons: list[np.ndarray], distances: np.ndarray, impl='avg'):
