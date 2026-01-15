@@ -174,12 +174,37 @@ class PolygonLoader(DataLoader):
     - Automatic pagination
     - Local caching (parquet)
     - Rate limiting handling
+    - Auto-converts futures symbols (NQ -> index proxy)
+    
+    Symbol formats:
+    - Stocks: SPY, AAPL, QQQ
+    - ETFs: SPY, QQQ, IWM
+    - Indices: Use I: prefix (I:SPX, I:NDX, I:DJI)
+    - Futures: NQ, ES -> auto-converted to ETF proxy (QQQ, SPY)
     """
     BASE_URL = "https://api.polygon.io/v2/aggs/ticker"
+    
+    # Map futures symbols to liquid ETF proxies
+    FUTURES_TO_ETF = {
+        'NQ': 'QQQ',    # Nasdaq 100 -> QQQ ETF
+        'ES': 'SPY',    # S&P 500 -> SPY ETF
+        'YM': 'DIA',    # Dow -> DIA ETF
+        'RTY': 'IWM',   # Russell 2000 -> IWM ETF
+        'CL': 'USO',    # Crude Oil -> USO ETF
+        'GC': 'GLD',    # Gold -> GLD ETF
+        'SI': 'SLV',    # Silver -> SLV ETF
+        'ZN': 'TLT',    # 10Y Treasury -> TLT ETF
+    }
     
     def load(self) -> pd.DataFrame:
         """Fetch data from Polygon API or cache."""
         symbol = self.config.symbol.upper()
+        
+        # Convert futures symbols to ETF proxies
+        original_symbol = symbol
+        if symbol in self.FUTURES_TO_ETF:
+            symbol = self.FUTURES_TO_ETF[symbol]
+            logger.info(f"Futures {original_symbol} -> using ETF proxy {symbol}")
         # Default to last 2 years if not specified
         end = pd.Timestamp(self.config.end_date) if self.config.end_date else pd.Timestamp.now()
         start = pd.Timestamp(self.config.start_date) if self.config.start_date else (end - pd.Timedelta(days=730))

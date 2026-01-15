@@ -18,7 +18,7 @@ Output:
 # =============================================================================
 
 # Option 1: Local parquet file
-DATA_SOURCE = "parquet"  # Options: "parquet", "polygon", "databento"
+DATA_SOURCE = "polygon"  # Options: "parquet", "polygon", "databento"
 DATA_PATH = "data/test/NQ_2024-09-06_2025-09-13.parquet"
 
 # Option 2: Polygon.io API (set DATA_SOURCE = "polygon")
