@@ -4,6 +4,7 @@ from .loader import (
     ParquetLoader,
     CSVLoader,
     PolygonLoader,
+    DatabentoLoader,
     create_loader,
     load_market_data
 )
@@ -14,6 +15,7 @@ __all__ = [
     'ParquetLoader',
     'CSVLoader',
     'PolygonLoader',
+    'DatabentoLoader',
     'create_loader',
     'load_market_data'
 ]

@@ -5,6 +5,7 @@ Main components:
 - WindowData, WindowCollection: Data structures for bundling window data
 - RegimeFilter, CalendarFilter, FilterPipeline: Pluggable pre-filters
 - WindowCollectionBuilder: Builder for creating enriched collections
+- TransactionCosts: Transaction cost modeling for backtesting
 """
 
 from .datastructures import WindowData, WindowCollection
@@ -28,6 +29,18 @@ from .volatility import (
     garman_klass_volatility,
     parkinson_volatility,
     REGIME_NAMES,
+)
+from .costs import (
+    TransactionCosts,
+    FUTURES_NQ,
+    FUTURES_ES,
+    FUTURES_MNQ,
+    FUTURES_MES,
+    FUTURES_CL,
+    FUTURES_GC,
+    STOCKS_COMMISSION_FREE,
+    NO_COSTS,
+    get_preset,
 )
 
 __all__ = [
@@ -58,4 +71,16 @@ __all__ = [
     'garman_klass_volatility',
     'parkinson_volatility',
     'REGIME_NAMES',
+    
+    # Transaction Costs
+    'TransactionCosts',
+    'FUTURES_NQ',
+    'FUTURES_ES',
+    'FUTURES_MNQ',
+    'FUTURES_MES',
+    'FUTURES_CL',
+    'FUTURES_GC',
+    'STOCKS_COMMISSION_FREE',
+    'NO_COSTS',
+    'get_preset',
 ]

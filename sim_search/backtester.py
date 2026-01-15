@@ -9,18 +9,21 @@ Simulates trading over historical data by:
 3. Generate forecast using nearest neighbors
 4. Compare forecast to actual outcomes
 5. Track performance metrics (hit ratio, accuracy, etc.)
+
+Transaction costs can be applied via the TransactionCosts config.
 """
 
 from dataclasses import dataclass, field, asdict
 from datetime import time, datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 import numpy as np
 import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 
 from .config import ForecastConfig
+from .costs import TransactionCosts, NO_COSTS, get_preset
 from .forecaster import (
     prepare_panel_data, similarity_search, regime_aware_similarity_search,
     forecast_from_neighbors, score_forecast, calculate_forecast_percentiles
@@ -35,13 +38,19 @@ class TradeResult:
     """Result of a single trade/forecast."""
     cutoff: pd.Timestamp  # Forecast origin
     forecast_returns: np.ndarray  # Predicted returns
-    actual_returns: np.ndarray  # Actual returns
+    actual_returns: np.ndarray  # Actual returns (gross, before costs)
     percentile_bands: dict  # p20, p50, p80
     neighbor_distances: np.ndarray  # Distances to neighbors
     
-    # Regime information (NEW)
+    # Regime information
     regime: int = -1  # Query regime: 0=LOW, 1=MED, 2=HIGH, -1=not computed
     same_regime_count: int = 0  # How many neighbors from same regime
+    
+    # Transaction costs (NEW)
+    entry_price: float = 0.0  # Price at entry for cost calculation
+    transaction_cost: float = 0.0  # Round-trip cost in dollars
+    cost_as_return: float = 0.0  # Cost expressed as return decimal
+    net_returns: Optional[np.ndarray] = None  # Actual returns AFTER costs
     
     # Calculated metrics
     rmse: float = 0.0
@@ -49,6 +58,10 @@ class TradeResult:
     direction_correct: bool = False
     hit_tp: Optional[bool] = None
     coverage_80: float = 0.0  # % of actual points within p20-p80 band
+    
+    # P&L metrics (gross and net)
+    gross_pnl: float = 0.0  # P&L before costs (in return terms)
+    net_pnl: float = 0.0  # P&L after costs (in return terms)
     
     # Excursion Analysis
     mfe: float = 0.0  
@@ -72,6 +85,18 @@ class TradeResult:
             p80 = self.percentile_bands['p80']
             inside = (self.actual_returns >= p20) & (self.actual_returns <= p80)
             self.coverage_80 = np.mean(inside)
+            
+            # Calculate P&L (gross)
+            is_long = forecast_cum > 0
+            self.gross_pnl = actual_cum if is_long else -actual_cum
+            
+            # Calculate net P&L (after costs)
+            if self.net_returns is not None:
+                net_cum = np.sum(self.net_returns)
+                self.net_pnl = net_cum if is_long else -net_cum
+            else:
+                # No costs applied, net = gross
+                self.net_pnl = self.gross_pnl - self.cost_as_return
             
             # Calculate MFE/MAE
             self._calculate_excursions()
@@ -113,7 +138,7 @@ class BacktestResult:
     avg_mae_excursion: float = 0.0
     mfe_mae_ratio: float = 0.0
     
-    # Performance
+    # Performance (GROSS - before costs)
     sharpe_ratio: float = 0.0
     max_drawdown: float = 0.0
     long_win_rate: float = 0.0
@@ -121,6 +146,15 @@ class BacktestResult:
     avg_win: float = 0.0
     avg_loss: float = 0.0
     expectancy: float = 0.0
+    
+    # Performance (NET - after costs)
+    total_costs: float = 0.0  # Total transaction costs in dollars
+    net_profit_factor: float = 0.0
+    net_sharpe_ratio: float = 0.0
+    net_max_drawdown: float = 0.0
+    net_avg_win: float = 0.0
+    net_avg_loss: float = 0.0
+    net_expectancy: float = 0.0
     
     def calculate_metrics(self):
         if not self.trades:
@@ -138,17 +172,17 @@ class BacktestResult:
         trades_with_tp = [t for t in self.trades if t.hit_tp is not None]
         if trades_with_tp:
             self.hit_ratio = sum(1 for t in trades_with_tp if t.hit_tp) / len(trades_with_tp)
+        
+        # Total transaction costs
+        self.total_costs = sum(t.transaction_cost for t in self.trades)
             
-        # PnL Analysis
+        # PnL Analysis (GROSS - before costs)
         wins = []
         losses = []
         trade_returns = []
         
         for t in self.trades:
-            acc_ret = np.sum(t.actual_returns)
-            # Adjust for direction
-            is_long = np.sum(t.forecast_returns) > 0
-            pnl = acc_ret if is_long else -acc_ret
+            pnl = t.gross_pnl
             trade_returns.append(pnl)
             
             if pnl > 0:
@@ -167,11 +201,6 @@ class BacktestResult:
         loss_rate = len(losses) / self.total_trades
         self.expectancy = (win_rate * self.avg_win) - (loss_rate * self.avg_loss)
         
-        # Excursion
-        self.avg_mfe = np.mean([t.mfe for t in self.trades])
-        self.avg_mae_excursion = np.mean([t.mae_excursion for t in self.trades])
-        self.mfe_mae_ratio = abs(self.avg_mfe / self.avg_mae_excursion) if self.avg_mae_excursion != 0 else 0.0
-        
         # Sharpe (Annualized assuming daily)
         if len(trade_returns) > 1:
             ret_std = np.std(trade_returns, ddof=1)
@@ -183,6 +212,48 @@ class BacktestResult:
         running_max = np.maximum.accumulate(equity)
         dd = running_max - equity
         self.max_drawdown = np.max(dd) if len(dd) > 0 else 0.0
+        
+        # PnL Analysis (NET - after costs)
+        net_wins = []
+        net_losses = []
+        net_trade_returns = []
+        
+        for t in self.trades:
+            pnl = t.net_pnl
+            net_trade_returns.append(pnl)
+            
+            if pnl > 0:
+                net_wins.append(pnl)
+            else:
+                net_losses.append(abs(pnl))
+        
+        net_total_wins = sum(net_wins)
+        net_total_losses = sum(net_losses) if net_losses else 1e-10
+        self.net_profit_factor = net_total_wins / net_total_losses
+        
+        self.net_avg_win = np.mean(net_wins) if net_wins else 0.0
+        self.net_avg_loss = np.mean(net_losses) if net_losses else 0.0
+        
+        net_win_rate = len(net_wins) / self.total_trades
+        net_loss_rate = len(net_losses) / self.total_trades
+        self.net_expectancy = (net_win_rate * self.net_avg_win) - (net_loss_rate * self.net_avg_loss)
+        
+        # Net Sharpe
+        if len(net_trade_returns) > 1:
+            net_ret_std = np.std(net_trade_returns, ddof=1)
+            if net_ret_std > 0:
+                self.net_sharpe_ratio = (np.mean(net_trade_returns) / net_ret_std) * np.sqrt(252)
+        
+        # Net Drawdown
+        net_equity = np.cumsum(net_trade_returns)
+        net_running_max = np.maximum.accumulate(net_equity)
+        net_dd = net_running_max - net_equity
+        self.net_max_drawdown = np.max(net_dd) if len(net_dd) > 0 else 0.0
+        
+        # Excursion
+        self.avg_mfe = np.mean([t.mfe for t in self.trades])
+        self.avg_mae_excursion = np.mean([t.mae_excursion for t in self.trades])
+        self.mfe_mae_ratio = abs(self.avg_mfe / self.avg_mae_excursion) if self.avg_mae_excursion != 0 else 0.0
         
         # Split win rates
         longs = [t for t in self.trades if np.sum(t.forecast_returns) > 0]
@@ -204,14 +275,20 @@ class BacktestResult:
             'K': self.config.get('n_neighbors'),
             'RegimeFilter': self.config.get('use_regime_filter', False),
             
-            # Key Metrics
+            # Key Metrics (GROSS)
             'Avg_RMSE': self.avg_rmse,
             'Avg_MAE': self.avg_mae,
             'Hit_Ratio': self.hit_ratio,
             'Dir_Accuracy': self.direction_accuracy,
             'Profit_Factor': self.profit_factor,
             'Sharpe': self.sharpe_ratio,
-            'Coverage_80': self.avg_coverage_80
+            'Coverage_80': self.avg_coverage_80,
+            
+            # Key Metrics (NET - after costs)
+            'Total_Costs': self.total_costs,
+            'Net_Profit_Factor': self.net_profit_factor,
+            'Net_Sharpe': self.net_sharpe_ratio,
+            'Net_Expectancy': self.net_expectancy,
         }
         return d
     
@@ -229,7 +306,7 @@ class BacktestResult:
             'use_regime_filter': self.config.get('use_regime_filter', False),
             'vol_method': self.config.get('vol_method', 'garman_klass'),
             
-            # Metrics
+            # Metrics (GROSS - before costs)
             'total_trades': self.total_trades,
             'hit_ratio': self.hit_ratio,
             'direction_accuracy': self.direction_accuracy,
@@ -247,12 +324,36 @@ class BacktestResult:
             'avg_win': self.avg_win,
             'avg_loss': self.avg_loss,
             'expectancy': self.expectancy,
+            
+            # Metrics (NET - after costs)
+            'total_costs': self.total_costs,
+            'net_profit_factor': self.net_profit_factor,
+            'net_sharpe_ratio': self.net_sharpe_ratio,
+            'net_max_drawdown': self.net_max_drawdown,
+            'net_avg_win': self.net_avg_win,
+            'net_avg_loss': self.net_avg_loss,
+            'net_expectancy': self.net_expectancy,
         }
 
 
 @dataclass
 class BacktestConfig:
-    """Configuration for Backtester."""
+    """
+    Configuration for Backtester.
+    
+    Transaction Costs
+    -----------------
+    Set transaction_costs to apply realistic trading costs:
+    
+        from sim_search.costs import FUTURES_NQ, FUTURES_ES, NO_COSTS
+        
+        config = BacktestConfig(
+            data_path='data/NQ.parquet',
+            transaction_costs=FUTURES_NQ,  # Standard NQ costs (~$22/RT)
+        )
+    
+    Or use a string preset: 'NQ', 'ES', 'MNQ', 'MES', 'CL', 'GC', 'STOCK', 'NONE'
+    """
     data_path: str
     
     # Symbol identification
@@ -268,10 +369,14 @@ class BacktestConfig:
     distance_metric: str = 'euclidean'
     norm_method: str = 'log_returns'
     
-    # Regime-aware settings (NEW)
+    # Regime-aware settings
     use_regime_filter: bool = False  # Enable two-stage regime filtering
     vol_method: str = 'garman_klass'  # Volatility estimator: 'garman_klass' or 'parkinson'
     min_same_regime: int = 5  # Minimum windows in same regime before fallback
+    
+    # Transaction costs (NEW)
+    # Can be TransactionCosts instance or string preset ('NQ', 'ES', etc.)
+    transaction_costs: Union[TransactionCosts, str, None] = None
     
     # Test settings
     min_train_windows: int = 30
@@ -286,6 +391,13 @@ class BacktestConfig:
     
     resample: str = ''
     timezone: str = 'America/New_York'
+    
+    def __post_init__(self):
+        """Resolve transaction_costs if string preset."""
+        if isinstance(self.transaction_costs, str):
+            self.transaction_costs = get_preset(self.transaction_costs)
+        elif self.transaction_costs is None:
+            self.transaction_costs = NO_COSTS
 
 
 class Backtester:
@@ -434,6 +546,15 @@ class Backtester:
                 # Check TP/SL outcome
                 hit_tp = _check_tp_sl(y_test, forecast, self.config.tp_threshold, self.config.sl_threshold)
                 
+                # Calculate transaction costs
+                costs = self.config.transaction_costs
+                entry_price = df.loc[test_cutoff, 'close']
+                
+                # Get cost metrics
+                _, _, transaction_cost = costs.calculate_trade_cost(entry_price)
+                cost_as_return = costs.cost_as_return(entry_price)
+                net_returns = costs.adjust_returns(y_test, entry_price)
+                
                 # Record trade
                 trade = TradeResult(
                     cutoff=test_cutoff,
@@ -443,7 +564,12 @@ class Backtester:
                     neighbor_distances=dists,
                     hit_tp=hit_tp,
                     regime=query_regime,
-                    same_regime_count=same_regime_count
+                    same_regime_count=same_regime_count,
+                    # Transaction costs
+                    entry_price=entry_price,
+                    transaction_cost=transaction_cost,
+                    cost_as_return=cost_as_return,
+                    net_returns=net_returns,
                 )
                 result.trades.append(trade)
                 
