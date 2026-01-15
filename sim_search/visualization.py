@@ -813,6 +813,7 @@ def plot_forecast_analysis(
     score_dict: Dict[str, float],
     regime: int = -1,
     signal_quality: Optional[Dict[str, Any]] = None,
+    regime_timeline: Optional[Dict[str, Any]] = None,
     title: str = "Forecast Analysis",
     plot_width: int = 1600,
     plot_height: int = 1000,
@@ -862,7 +863,7 @@ def plot_forecast_analysis(
         rows=2, cols=2,
         subplot_titles=[
             'Price Forecast vs Actual',
-            'Neighbor Quality: Distance vs Horizon Return',
+            'Regime Timeline (Recent History)',
             'Cumulative Return Over Horizon',
             'Forecast Residuals (Error Analysis)'
         ],
@@ -951,58 +952,87 @@ def plot_forecast_analysis(
         )
     
     # =========================================================================
-    # SUBPLOT 2: Neighbor Distance vs Return Scatter (top-right)
+    # SUBPLOT 2: Regime Timeline (top-right)
     # =========================================================================
     
-    neighbor_cum_returns = []
-    neighbor_regimes = []
-    for w in neighbor_windows:
-        cum_ret = np.sum(w.y) * 100  # Cumulative return as percentage
-        neighbor_cum_returns.append(cum_ret)
-        neighbor_regimes.append(w.regime if hasattr(w, 'regime') else -1)
-    
-    neighbor_cum_returns = np.array(neighbor_cum_returns)
-    
-    # Color by direction
-    colors = ['#43A047' if r > 0 else '#E53935' for r in neighbor_cum_returns]
-    
-    fig.add_trace(
-        go.Scatter(
-            x=neighbor_distances,
-            y=neighbor_cum_returns,
-            mode='markers',
-            name='Neighbors',
-            marker=dict(
-                size=12,
-                color=colors,
-                line=dict(width=1, color='white'),
-                symbol='circle'
-            ),
-            text=[f"Ret: {r:.2f}%" for r in neighbor_cum_returns],
-            hovertemplate="Distance: %{x:.2e}<br>Return: %{y:.2f}%<extra></extra>"
-        ),
-        row=1, col=2
-    )
-    
-    # Add trend line
-    if len(neighbor_distances) > 2:
-        z = np.polyfit(neighbor_distances, neighbor_cum_returns, 1)
-        p = np.poly1d(z)
-        x_trend = np.linspace(neighbor_distances.min(), neighbor_distances.max(), 50)
+    if regime_timeline is not None and 'cutoffs' in regime_timeline and 'regimes' in regime_timeline:
+        # Use full regime timeline
+        timeline_cutoffs = regime_timeline['cutoffs']
+        timeline_regimes = regime_timeline['regimes']
+        
+        # Limit to last N windows for readability
+        max_windows = 50
+        if len(timeline_cutoffs) > max_windows:
+            timeline_cutoffs = timeline_cutoffs[-max_windows:]
+            timeline_regimes = timeline_regimes[-max_windows:]
+        
+        # Create bar chart showing regime over time
+        regime_colors_solid = {0: '#43A047', 1: '#FFA726', 2: '#E53935'}
+        bar_colors = [regime_colors_solid.get(r, 'gray') for r in timeline_regimes]
+        
         fig.add_trace(
-            go.Scatter(
-                x=x_trend,
-                y=p(x_trend),
-                mode='lines',
-                name='Trend',
-                line=dict(color='gray', width=1, dash='dot'),
-                showlegend=False
+            go.Bar(
+                x=timeline_cutoffs,
+                y=[1] * len(timeline_cutoffs),  # All bars same height
+                marker_color=bar_colors,
+                name='Regime',
+                showlegend=False,
+                hovertemplate="%{x}<br>Regime: %{customdata}<extra></extra>",
+                customdata=[REGIME_NAMES.get(r, '?') for r in timeline_regimes]
             ),
             row=1, col=2
         )
-    
-    # Add zero line
-    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=1, col=2)
+        
+        # Add current window marker (use shape instead of vline for timestamp compatibility)
+        fig.add_shape(
+            type="line",
+            x0=cutoff, x1=cutoff,
+            y0=0, y1=1.2,
+            line=dict(color="black", width=3),
+            row=1, col=2
+        )
+        fig.add_annotation(
+            x=cutoff, y=1.1,
+            text="NOW",
+            showarrow=False,
+            font=dict(size=12, color="black"),
+            row=1, col=2
+        )
+        
+        # Add legend for regimes
+        for regime_id, color in regime_colors_solid.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=[None], y=[None],
+                    mode='markers',
+                    marker=dict(size=10, color=color),
+                    name=f'{REGIME_NAMES.get(regime_id, "?")} Vol',
+                    showlegend=True
+                ),
+                row=1, col=2
+            )
+    else:
+        # Fallback: Show neighbor distance vs return scatter
+        neighbor_cum_returns = []
+        for w in neighbor_windows:
+            cum_ret = np.sum(w.y) * 100
+            neighbor_cum_returns.append(cum_ret)
+        
+        neighbor_cum_returns = np.array(neighbor_cum_returns)
+        colors = ['#43A047' if r > 0 else '#E53935' for r in neighbor_cum_returns]
+        
+        fig.add_trace(
+            go.Scatter(
+                x=neighbor_distances,
+                y=neighbor_cum_returns,
+                mode='markers',
+                name='Neighbors',
+                marker=dict(size=12, color=colors, line=dict(width=1, color='white')),
+                hovertemplate="Distance: %{x:.2e}<br>Return: %{y:.2f}%<extra></extra>"
+            ),
+            row=1, col=2
+        )
+        fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=1, col=2)
     
     # =========================================================================
     # SUBPLOT 3: Cumulative Return Over Horizon (bottom-left)
@@ -1136,14 +1166,35 @@ def plot_forecast_analysis(
         for interp in signal_quality['interpretation'][:2]:  # First 2 lines
             signal_text += f"{interp}<br>"
         
+        # Add regime stability info
+        regime_stability = signal_quality.get('regime_stability', 'N/A')
+        windows_in_regime = signal_quality.get('windows_in_regime', 'N/A')
+        is_transitioning = signal_quality.get('is_transitioning', False)
+        
+        if regime_stability == "STABLE":
+            stability_color = "#43A047"
+        elif regime_stability == "UNSTABLE":
+            stability_color = "#E53935"
+        else:
+            stability_color = "#FFA726"
+        
         signal_text += (
             f"<br>"
-            f"<b>Regime Bet:</b><br>"
-            f"Pattern from {regime_name} vol<br>"
-            f"regime. Betting that similar<br>"
-            f"historical patterns predict<br>"
-            f"future movement."
+            f"<b>Regime Status:</b><br>"
+            f"Current: {regime_name}<br>"
+            f"Stability: <span style='color:{stability_color}'>{regime_stability}</span><br>"
+            f"Windows in regime: {windows_in_regime}<br>"
         )
+        
+        if is_transitioning:
+            signal_text += f"<span style='color:#E53935'><b>TRANSITIONING!</b></span><br>"
+        
+        # Add regime history if available
+        regime_history = signal_quality.get('regime_history', [])
+        if regime_history:
+            signal_text += f"<br><b>Recent History:</b><br>"
+            for rname, rcount in regime_history[:3]:
+                signal_text += f"{rname}: {rcount} windows<br>"
         
         fig.add_annotation(
             text=signal_text,
@@ -1159,12 +1210,12 @@ def plot_forecast_analysis(
     
     # Update axes labels
     fig.update_xaxes(title_text="Time", row=1, col=1)
-    fig.update_xaxes(title_text="Distance (WDTW)", row=1, col=2)
+    fig.update_xaxes(title_text="Date", row=1, col=2)
     fig.update_xaxes(title_text="Bar", row=2, col=1)
     fig.update_xaxes(title_text="Bar", row=2, col=2)
     
     fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_yaxes(title_text="Horizon Return (%)", row=1, col=2)
+    fig.update_yaxes(title_text="Regime", row=1, col=2, showticklabels=False)
     fig.update_yaxes(title_text="Cumulative Return (%)", row=2, col=1)
     fig.update_yaxes(title_text="Residual (%)", row=2, col=2)
     

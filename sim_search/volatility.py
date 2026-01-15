@@ -324,3 +324,128 @@ def log_regime_distribution(regimes: np.ndarray, prefix: str = ""):
     
     msg = f"{prefix}Regime distribution: " + " | ".join(parts)
     logger.info(msg)
+
+
+def analyze_regime_transitions(
+    regimes: np.ndarray,
+    cutoffs: List[pd.Timestamp],
+    current_regime: int
+) -> dict:
+    """
+    Analyze regime transitions to detect instability.
+    
+    This tells you:
+    - How long we've been in current regime (stability)
+    - When the last transition happened
+    - How many transitions in recent history
+    
+    Parameters
+    ----------
+    regimes : np.ndarray
+        Array of regime labels for each window (historical)
+    cutoffs : list
+        Cutoff timestamps for each window
+    current_regime : int
+        The regime of the test/current window
+        
+    Returns
+    -------
+    dict containing:
+        - current_regime: int (0=LOW, 1=MED, 2=HIGH)
+        - current_regime_name: str
+        - windows_in_current_regime: int (streak length)
+        - regime_stability: str ("STABLE", "RECENT_CHANGE", "UNSTABLE")
+        - last_transition_idx: int (when did regime last change)
+        - last_transition_date: Timestamp or None
+        - transitions_last_10: int (how many changes in last 10 windows)
+        - transitions_last_20: int (how many changes in last 20 windows)
+        - regime_history: list of (regime, count) for recent regimes
+        - is_transitioning: bool (True if we just changed regime)
+    """
+    n = len(regimes)
+    
+    if n == 0:
+        return {
+            'current_regime': current_regime,
+            'current_regime_name': REGIME_NAMES.get(current_regime, 'N/A'),
+            'windows_in_current_regime': 0,
+            'regime_stability': 'UNKNOWN',
+            'last_transition_idx': None,
+            'last_transition_date': None,
+            'transitions_last_10': 0,
+            'transitions_last_20': 0,
+            'regime_history': [],
+            'is_transitioning': False
+        }
+    
+    # Count how many recent windows match current regime (streak from end)
+    streak = 0
+    for i in range(n - 1, -1, -1):
+        if regimes[i] == current_regime:
+            streak += 1
+        else:
+            break
+    
+    # Find last transition point
+    last_transition_idx = None
+    for i in range(n - 1, 0, -1):
+        if regimes[i] != regimes[i - 1]:
+            last_transition_idx = i
+            break
+    
+    last_transition_date = cutoffs[last_transition_idx] if last_transition_idx is not None and last_transition_idx < len(cutoffs) else None
+    
+    # Count transitions in last N windows
+    def count_transitions(arr):
+        if len(arr) < 2:
+            return 0
+        return np.sum(arr[1:] != arr[:-1])
+    
+    transitions_last_10 = count_transitions(regimes[-10:]) if n >= 10 else count_transitions(regimes)
+    transitions_last_20 = count_transitions(regimes[-20:]) if n >= 20 else count_transitions(regimes)
+    
+    # Determine stability
+    if streak >= 10 and transitions_last_20 <= 2:
+        stability = "STABLE"
+    elif streak >= 5 and transitions_last_10 <= 1:
+        stability = "STABLE"
+    elif streak <= 2 or transitions_last_10 >= 3:
+        stability = "UNSTABLE"
+    else:
+        stability = "RECENT_CHANGE"
+    
+    # Check if we just changed (current regime differs from most recent training)
+    is_transitioning = (regimes[-1] != current_regime) if n > 0 else False
+    
+    # Build regime history (last 5 regime changes)
+    regime_history = []
+    current_run_regime = regimes[-1] if n > 0 else None
+    current_run_count = 0
+    
+    for i in range(n - 1, -1, -1):
+        if regimes[i] == current_run_regime:
+            current_run_count += 1
+        else:
+            if current_run_regime is not None:
+                regime_history.append((REGIME_NAMES.get(current_run_regime, '?'), current_run_count))
+            current_run_regime = regimes[i]
+            current_run_count = 1
+        if len(regime_history) >= 5:
+            break
+    
+    if current_run_regime is not None and len(regime_history) < 5:
+        regime_history.append((REGIME_NAMES.get(current_run_regime, '?'), current_run_count))
+    
+    return {
+        'current_regime': current_regime,
+        'current_regime_name': REGIME_NAMES.get(current_regime, 'N/A'),
+        'windows_in_current_regime': streak,
+        'regime_stability': stability,
+        'last_transition_idx': last_transition_idx,
+        'last_transition_date': last_transition_date,
+        'transitions_last_10': transitions_last_10,
+        'transitions_last_20': transitions_last_20,
+        'regime_history': regime_history,
+        'is_transitioning': is_transitioning,
+        'total_windows': n
+    }

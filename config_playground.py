@@ -68,6 +68,7 @@ if __name__ == "__main__":
     )
     from sim_search.forecaster import similarity_search, forecast_from_neighbors, score_forecast, compute_signal_quality
     from sim_search.visualization import plot_forecast_analysis
+    from sim_search.volatility import analyze_regime_transitions
     
     print("\n" + "="*80)
     print(" PARAMETER PLAYGROUND - Regime-Aware Market Similarity Search")
@@ -202,6 +203,78 @@ if __name__ == "__main__":
       |-- Cutoff:     {test.cutoff}
       |-- Volatility: {test.volatility:.6f}
       +-- Regime:     {test_marker} {test.regime_name}
+""")
+    
+    # =========================================================================
+    # REGIME TRANSITION ANALYSIS - Is the market changing?
+    # =========================================================================
+    print("-"*80)
+    print(" REGIME TRANSITION ANALYSIS")
+    print("-"*80)
+    
+    # Get regime history and transitions
+    train_regimes = np.array([w.regime for w in train])
+    train_cutoffs = [w.cutoff for w in train]
+    
+    regime_transitions = analyze_regime_transitions(
+        regimes=train_regimes,
+        cutoffs=train_cutoffs,
+        current_regime=test.regime
+    )
+    
+    # Stability indicator
+    if regime_transitions['regime_stability'] == "STABLE":
+        stability_icon = "[STABLE]"
+        stability_bar = "##########"
+    elif regime_transitions['regime_stability'] == "RECENT_CHANGE":
+        stability_icon = "[CHANGE]"
+        stability_bar = "#####-----"
+    else:
+        stability_icon = "[UNSTBL]"
+        stability_bar = "##--------"
+    
+    print(f"""
+   The system detects REGIME CHANGES to warn when:
+   "The market is about to stop behaving normally."
+   
+   +----------------------------------------------------------------------------+
+   |  REGIME STABILITY:  {regime_transitions['regime_stability']:12s}  {stability_icon}  {stability_bar}              |
+   +----------------------------------------------------------------------------+
+   
+   CURRENT STATE:
+      |-- Current regime:         {regime_transitions['current_regime_name']}
+      |-- Windows in this regime: {regime_transitions['windows_in_current_regime']} consecutive
+      |-- Transitions (last 10):  {regime_transitions['transitions_last_10']}
+      +-- Transitions (last 20):  {regime_transitions['transitions_last_20']}
+""")
+    
+    # Regime timeline (last 5 periods)
+    if regime_transitions['regime_history']:
+        print("   RECENT REGIME HISTORY (newest first):")
+        print("   +----------+----------+")
+        print("   | Regime   | Windows  |")
+        print("   +----------+----------+")
+        for regime_name, count in regime_transitions['regime_history']:
+            print(f"   | {regime_name:8s} | {count:8d} |")
+        print("   +----------+----------+")
+    
+    # Warning if transitioning
+    if regime_transitions['is_transitioning']:
+        print(f"""
+   *** WARNING: REGIME TRANSITION DETECTED ***
+   The test window is in {regime_transitions['current_regime_name']} regime,
+   but the most recent training window was in a DIFFERENT regime.
+   
+   This suggests the market structure may be changing.
+   -> Higher uncertainty, neighbors may be less predictive.
+""")
+    
+    if regime_transitions['regime_stability'] == "UNSTABLE":
+        print("""
+   *** WARNING: UNSTABLE REGIME ***
+   Multiple regime changes in recent history.
+   The market is NOT behaving normally.
+   -> Consider staying flat or reducing position size.
 """)
     
     # =========================================================================
@@ -566,6 +639,20 @@ if __name__ == "__main__":
     for line in signal_quality['interpretation']:
         print(f"   {line}")
     
+    # Add regime stability warning if needed
+    if regime_transitions['regime_stability'] == "UNSTABLE":
+        print("""
+   *** REGIME INSTABILITY WARNING ***
+   Multiple regime changes detected. Market structure is changing.
+   >> This amplifies any ANOMALY signal - proceed with extra caution.
+""")
+    elif regime_transitions['is_transitioning']:
+        print("""
+   ** REGIME TRANSITION NOTE **
+   Current window is in a different regime than recent history.
+   >> Neighbors may be from an older regime - watch for divergence.
+""")
+    
     print(f"""
    ------------------------------------------------------------------------------
    
@@ -578,10 +665,15 @@ if __name__ == "__main__":
    - {up_neighbors} went UP afterward (avg: {up_avg:.4f}%)
    - {down_neighbors} went DOWN afterward (avg: {down_avg:.4f}%)
    
-   If ANOMALY is HIGH:
+   REGIME CONTEXT:
+   - Current regime: {regime_transitions['current_regime_name']}
+   - Stability: {regime_transitions['regime_stability']}
+   - Consecutive windows in regime: {regime_transitions['windows_in_current_regime']}
+   
+   If ANOMALY is HIGH or REGIME is UNSTABLE:
       "The market is about to stop behaving normally."
       -> This is NOT a failure - it's valuable information.
-      -> High anomaly = unusual market structure, expect surprises.
+      -> High anomaly/instability = unusual market structure, expect surprises.
    
    ==============================================================================
 """)
@@ -593,6 +685,18 @@ if __name__ == "__main__":
     print(" GENERATING VISUALIZATION")
     print("-"*80)
     
+    # Add regime stability info to signal_quality for HTML report
+    signal_quality['regime_stability'] = regime_transitions['regime_stability']
+    signal_quality['regime_history'] = regime_transitions['regime_history']
+    signal_quality['is_transitioning'] = regime_transitions['is_transitioning']
+    signal_quality['windows_in_regime'] = regime_transitions['windows_in_current_regime']
+    
+    # Create regime timeline data for visualization
+    regime_timeline = {
+        'cutoffs': train_cutoffs,
+        'regimes': train_regimes.tolist()
+    }
+    
     fig = plot_forecast_analysis(
         df=df,
         cutoff=test.cutoff,
@@ -603,6 +707,7 @@ if __name__ == "__main__":
         score_dict=score,
         regime=test.regime,
         signal_quality=signal_quality,
+        regime_timeline=regime_timeline,
         title=f"Forecast Analysis (k={N_NEIGHBORS}, {DISTANCE_METRIC.upper()})",
         hist_context_bars=100
     )
