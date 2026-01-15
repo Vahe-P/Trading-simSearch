@@ -50,7 +50,7 @@ WINDOW_START = time(8, 0)      # Window start time (8:00 PM = overnight start)
 WINDOW_END = time(9, 30)       # Window end time (9:30 AM = market open)
 EXTEND_SESSIONS = 1            # 1 = overnight (spans to next day)
 HORIZON_LEN = 20               # Bars to forecast ahead
-NORM_METHOD = "log_returns"    # Options: "log_returns", "pct_change", "rolling_zscore"
+NORM_METHOD = "rolling_zscore"  # Options: "log_returns", "pct_change", "rolling_zscore"
 
 # =============================================================================
 # RUN FORECAST
