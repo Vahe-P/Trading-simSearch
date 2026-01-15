@@ -25,7 +25,7 @@ class DataLoaderConfig:
     """Configuration for data loading."""
     
     # Source type
-    source_type: Literal['parquet', 'csv', 'polygon', 'databento'] = 'parquet'
+    source_type: Literal['parquet', 'csv', 'polygon'] = 'parquet'
     
     # File-based sources
     file_path: Optional[str] = None
@@ -49,7 +49,7 @@ class DataLoaderConfig:
         """Validate configuration."""
         if self.source_type in ('parquet', 'csv') and not self.file_path:
             raise ValueError(f"file_path required for source_type='{self.source_type}'")
-        if self.source_type in ('polygon', 'databento') and not self.symbol:
+        if self.source_type == 'polygon' and not self.symbol:
             raise ValueError(f"symbol required for source_type='{self.source_type}'")
 
 
@@ -310,142 +310,6 @@ class PolygonLoader(DataLoader):
         return df
 
 
-class DatabentoLoader(DataLoader):
-    """
-    Load data from Databento API.
-    
-    Databento provides high-quality, normalized market data with:
-    - Tick-level granularity
-    - Multiple asset classes (futures, equities, options)
-    - Historical and live data
-    
-    Features:
-    - Automatic schema detection (ohlcv-1s, ohlcv-1m, trades, etc.)
-    - Local caching (parquet)
-    - Rate limiting handling
-    
-    Setup:
-        pip install databento
-        export DATABENTO_API_KEY="your_key_here"
-    
-    Example:
-        config = DataLoaderConfig(
-            source_type='databento',
-            symbol='NQ.c.0',  # Continuous front-month NQ
-            start_date='2024-01-01',
-            end_date='2024-12-31',
-            resample='1min',  # Schema: ohlcv-1m
-        )
-        loader = DatabentoLoader(config)
-        df = loader.load()
-    """
-    
-    def load(self) -> pd.DataFrame:
-        """Fetch data from Databento API or cache."""
-        try:
-            import databento as db
-        except ImportError:
-            raise ImportError(
-                "databento package not installed. Install with: pip install databento"
-            )
-        
-        symbol = self.config.symbol
-        # Default to last 2 years if not specified
-        end = pd.Timestamp(self.config.end_date) if self.config.end_date else pd.Timestamp.now()
-        start = pd.Timestamp(self.config.start_date) if self.config.start_date else (end - pd.Timedelta(days=730))
-        
-        # Check cache first
-        cache_path = Path(self.config.cache_dir) / f"databento_{symbol.replace('.', '_')}_{start.date()}_{end.date()}.parquet"
-        if cache_path.exists():
-            logger.info(f"Loading from cache: {cache_path}")
-            df = pd.read_parquet(cache_path)
-            return self._finalize(df)
-        
-        # Get API key
-        api_key = self.config.api_key or os.getenv("DATABENTO_API_KEY")
-        if not api_key:
-            raise ValueError("DATABENTO_API_KEY not found in config or environment variables")
-        
-        # Determine schema based on resample
-        schema = 'ohlcv-1m'  # Default to 1-minute OHLCV
-        if self.config.resample:
-            if 's' in self.config.resample:
-                schema = 'ohlcv-1s'
-            elif 'h' in self.config.resample or 'd' in self.config.resample:
-                schema = 'ohlcv-1h'
-        
-        logger.info(f"Fetching {symbol} from Databento ({start.date()} to {end.date()}, schema={schema})")
-        
-        # Initialize client
-        client = db.Historical(api_key)
-        
-        # Fetch data
-        # Note: Databento uses dataset names like 'GLBX.MDP3' for CME futures
-        dataset = 'GLBX.MDP3'  # CME Globex - common for NQ, ES, CL, etc.
-        
-        try:
-            data = client.timeseries.get_range(
-                dataset=dataset,
-                symbols=[symbol],
-                schema=schema,
-                start=start.strftime('%Y-%m-%d'),
-                end=end.strftime('%Y-%m-%d'),
-            )
-            
-            # Convert to DataFrame
-            df = data.to_df()
-            
-            if df.empty:
-                raise ValueError(f"No data found for {symbol}")
-            
-            # Standardize column names
-            # Databento OHLCV columns: open, high, low, close, volume
-            # Index is already timestamp
-            
-            # Ensure we have the right columns
-            if 'close' not in df.columns:
-                # Try to map from Databento schema
-                col_map = {
-                    'open': 'open',
-                    'high': 'high',
-                    'low': 'low',
-                    'close': 'close',
-                    'volume': 'volume',
-                }
-                df = df.rename(columns=col_map)
-            
-            logger.info(f"Fetched {len(df)} rows from Databento")
-            
-            # Save to cache
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_parquet(cache_path)
-            logger.info(f"Cached data to {cache_path}")
-            
-            return self._finalize(df)
-            
-        except Exception as e:
-            logger.error(f"Error fetching from Databento: {e}")
-            raise
-    
-    def _finalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Validate, filter and resample."""
-        df = self._validate_dataframe(df)
-        
-        # Apply date filters
-        if self.config.start_date:
-            start_ts = pd.Timestamp(self.config.start_date)
-            if df.index.tz is not None:
-                start_ts = start_ts.tz_localize(df.index.tz)
-            df = df[df.index >= start_ts]
-        if self.config.end_date:
-            end_ts = pd.Timestamp(self.config.end_date)
-            if df.index.tz is not None:
-                end_ts = end_ts.tz_localize(df.index.tz)
-            df = df[df.index <= end_ts]
-        
-        return df
-
-
 def create_loader(config: DataLoaderConfig) -> DataLoader:
     """
     Factory function to create appropriate data loader.
@@ -469,16 +333,11 @@ def create_loader(config: DataLoaderConfig) -> DataLoader:
     >>> # From Polygon.io
     >>> config = DataLoaderConfig(source_type='polygon', symbol='NQ', start_date='2024-01-01')
     >>> df = create_loader(config).load()
-    
-    >>> # From Databento
-    >>> config = DataLoaderConfig(source_type='databento', symbol='NQ.c.0', start_date='2024-01-01')
-    >>> df = create_loader(config).load()
     """
     loaders = {
         'parquet': ParquetLoader,
         'csv': CSVLoader,
         'polygon': PolygonLoader,
-        'databento': DatabentoLoader,
     }
     
     if config.source_type not in loaders:

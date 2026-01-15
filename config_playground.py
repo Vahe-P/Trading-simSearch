@@ -18,11 +18,10 @@ Output:
 # =============================================================================
 
 # Option 1: Local parquet file
-DATA_SOURCE = "polygon"  # Options: "parquet", "polygon", "databento"
+DATA_SOURCE = "polygon"  # Options: "parquet", "polygon"
 DATA_PATH = "data/test/NQ_2024-09-06_2025-09-13.parquet"
 
 # Option 2: Polygon.io API (set DATA_SOURCE = "polygon")
-# Option 3: Databento API (set DATA_SOURCE = "databento")
 
 # =============================================================================
 # SYMBOL SELECTION (for API sources)
@@ -31,8 +30,8 @@ DATA_PATH = "data/test/NQ_2024-09-06_2025-09-13.parquet"
 # Choose symbol to analyze:
 SYMBOL = "NQ"  # Popular: NQ, ES, CL, GC, SPY, QQQ, AAPL
 
-# Polygon symbols:   NQ, ES, CL, GC (futures use I: prefix internally)
-# Databento symbols: NQ.c.0, ES.c.0, CL.c.0 (continuous front-month)
+# Futures (NQ, ES) are auto-converted to ETF proxies (QQQ, SPY)
+# Stocks work directly: SPY, QQQ, AAPL, etc.
 
 # Date range for API fetch
 START_DATE = "2024-01-01"  # YYYY-MM-DD
@@ -199,35 +198,8 @@ if __name__ == "__main__":
         df = loader.load()
         print(f"   Fetched/cached: {len(df):,} bars")
     
-    elif DATA_SOURCE == "databento":
-        print(f"\n[DATA] Fetching {SYMBOL} from Databento API...")
-        print(f"   Date range: {START_DATE} -> {END_DATE or 'today'}")
-        
-        # Check for API key
-        api_key = os.getenv("DATABENTO_API_KEY")
-        if not api_key:
-            print("\n   [!] DATABENTO_API_KEY not set. Set it with:")
-            print("       export DATABENTO_API_KEY='your_key_here'")
-            raise ValueError("DATABENTO_API_KEY required for Databento data source")
-        
-        # Databento uses different symbol format
-        db_symbol = SYMBOL if '.' in SYMBOL else f"{SYMBOL}.c.0"
-        
-        config = DataLoaderConfig(
-            source_type='databento',
-            symbol=db_symbol,
-            start_date=START_DATE,
-            end_date=END_DATE if END_DATE else None,
-            resample=RESAMPLE_TF,
-            cache_dir=CACHE_DIR,
-            api_key=api_key,
-        )
-        loader = create_loader(config)
-        df = loader.load()
-        print(f"   Fetched/cached: {len(df):,} bars")
-    
     else:
-        raise ValueError(f"Unknown DATA_SOURCE: {DATA_SOURCE}. Use 'parquet', 'polygon', or 'databento'")
+        raise ValueError(f"Unknown DATA_SOURCE: {DATA_SOURCE}. Use 'parquet' or 'polygon'")
     
     print(f"   Total bars: {len(df):,}")
     print(f"   Date range: {df.index.min().strftime('%Y-%m-%d')} -> {df.index.max().strftime('%Y-%m-%d')}")
