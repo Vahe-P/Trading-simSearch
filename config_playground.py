@@ -14,9 +14,35 @@ Output:
 """
 
 # =============================================================================
-# DATA SETTINGS
+# DATA SOURCE - Choose where to get market data
 # =============================================================================
+
+# Option 1: Local parquet file
+DATA_SOURCE = "parquet"  # Options: "parquet", "polygon", "databento"
 DATA_PATH = "data/test/NQ_2024-09-06_2025-09-13.parquet"
+
+# Option 2: Polygon.io API (set DATA_SOURCE = "polygon")
+# Option 3: Databento API (set DATA_SOURCE = "databento")
+
+# =============================================================================
+# SYMBOL SELECTION (for API sources)
+# =============================================================================
+
+# Choose symbol to analyze:
+SYMBOL = "NQ"  # Popular: NQ, ES, CL, GC, SPY, QQQ, AAPL
+
+# Polygon symbols:   NQ, ES, CL, GC (futures use I: prefix internally)
+# Databento symbols: NQ.c.0, ES.c.0, CL.c.0 (continuous front-month)
+
+# Date range for API fetch
+START_DATE = "2024-01-01"  # YYYY-MM-DD
+END_DATE = "2025-01-01"    # YYYY-MM-DD (leave empty for today)
+
+# Resample to this timeframe (for API sources)
+RESAMPLE_TF = "1min"  # Options: "1min", "5min", "15min", "1h"
+
+# Cache directory (API data is cached here after first fetch)
+CACHE_DIR = "data/cache"
 
 # =============================================================================
 # FILTER SETTINGS (toggle on/off)
@@ -115,6 +141,13 @@ if __name__ == "__main__":
     print(" CURRENT CONFIGURATION")
     print("-"*80)
     print("\n   +" + "-"*76 + "+")
+    print(f"   |  DATA SOURCE                                                               |")
+    if DATA_SOURCE == "parquet":
+        print(f"   |    Source:          {'PARQUET':12s}  |  File: {DATA_PATH[:36]:36s}   |")
+    else:
+        print(f"   |    Source:          {DATA_SOURCE.upper():12s}  |  Symbol: {SYMBOL:34s}   |")
+        print(f"   |    Date Range:      {START_DATE} -> {END_DATE or 'today':10s}  |  Resample: {RESAMPLE_TF:23s}   |")
+    print("   +" + "-"*76 + "+")
     print(f"   |  FILTERS                                                                   |")
     print(f"   |    Regime Filter:   {'ENABLED':12s}  |  Vol Method:    {VOL_METHOD:20s}   |")
     print(f"   |    Calendar Filter: {'ENABLED' if CALENDAR_FILTER_ENABLED else 'DISABLED':12s}  |  Match FOMC:    {'YES' if MATCH_FOMC_CONTEXT else 'NO':20s}   |")
@@ -130,10 +163,72 @@ if __name__ == "__main__":
     print("   +" + "-"*76 + "+")
     
     # =========================================================================
-    # LOAD DATA
+    # LOAD DATA (supports parquet, Polygon API, Databento API)
     # =========================================================================
-    print(f"\n[DATA] Loading from {DATA_PATH}...")
-    df = pd.read_parquet(DATA_PATH)
+    from sim_search.data import load_market_data, DataLoaderConfig, create_loader
+    from pathlib import Path
+    import os
+    
+    if DATA_SOURCE == "parquet":
+        print(f"\n[DATA] Loading from local file: {DATA_PATH}")
+        df = pd.read_parquet(DATA_PATH)
+    
+    elif DATA_SOURCE == "polygon":
+        print(f"\n[DATA] Fetching {SYMBOL} from Polygon.io API...")
+        print(f"   Date range: {START_DATE} -> {END_DATE or 'today'}")
+        print(f"   Resample: {RESAMPLE_TF}")
+        
+        # Check for API key
+        api_key = os.getenv("POLYGON_API_KEY")
+        if not api_key:
+            print("\n   [!] POLYGON_API_KEY not set. Set it with:")
+            print("       export POLYGON_API_KEY='your_key_here'")
+            print("   Or add to market_search.env file")
+            raise ValueError("POLYGON_API_KEY required for Polygon data source")
+        
+        config = DataLoaderConfig(
+            source_type='polygon',
+            symbol=SYMBOL,
+            start_date=START_DATE,
+            end_date=END_DATE if END_DATE else None,
+            resample=RESAMPLE_TF,
+            cache_dir=CACHE_DIR,
+            api_key=api_key,
+        )
+        loader = create_loader(config)
+        df = loader.load()
+        print(f"   Fetched/cached: {len(df):,} bars")
+    
+    elif DATA_SOURCE == "databento":
+        print(f"\n[DATA] Fetching {SYMBOL} from Databento API...")
+        print(f"   Date range: {START_DATE} -> {END_DATE or 'today'}")
+        
+        # Check for API key
+        api_key = os.getenv("DATABENTO_API_KEY")
+        if not api_key:
+            print("\n   [!] DATABENTO_API_KEY not set. Set it with:")
+            print("       export DATABENTO_API_KEY='your_key_here'")
+            raise ValueError("DATABENTO_API_KEY required for Databento data source")
+        
+        # Databento uses different symbol format
+        db_symbol = SYMBOL if '.' in SYMBOL else f"{SYMBOL}.c.0"
+        
+        config = DataLoaderConfig(
+            source_type='databento',
+            symbol=db_symbol,
+            start_date=START_DATE,
+            end_date=END_DATE if END_DATE else None,
+            resample=RESAMPLE_TF,
+            cache_dir=CACHE_DIR,
+            api_key=api_key,
+        )
+        loader = create_loader(config)
+        df = loader.load()
+        print(f"   Fetched/cached: {len(df):,} bars")
+    
+    else:
+        raise ValueError(f"Unknown DATA_SOURCE: {DATA_SOURCE}. Use 'parquet', 'polygon', or 'databento'")
+    
     print(f"   Total bars: {len(df):,}")
     print(f"   Date range: {df.index.min().strftime('%Y-%m-%d')} -> {df.index.max().strftime('%Y-%m-%d')}")
     
