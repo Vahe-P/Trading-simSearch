@@ -858,21 +858,24 @@ def plot_forecast_analysis(
     """
     from .volatility import REGIME_NAMES, REGIME_COLORS
     
-    # Create 2x2 subplot layout
+    # Create 2x3 subplot layout (5 charts + 1 empty for annotations)
     fig = make_subplots(
-        rows=2, cols=2,
+        rows=2, cols=3,
         subplot_titles=[
             'Price Forecast vs Actual',
-            'Regime Timeline (Recent History)',
+            'Regime Timeline',
+            'KNN Neighbor Analysis',
             'Cumulative Return Over Horizon',
-            'Forecast Residuals (Error Analysis)'
+            'Forecast Residuals',
+            ''  # Empty for signal quality annotation area
         ],
         vertical_spacing=0.12,
-        horizontal_spacing=0.08,
+        horizontal_spacing=0.06,
         specs=[
-            [{"type": "xy"}, {"type": "xy"}],
-            [{"type": "xy"}, {"type": "xy"}]
-        ]
+            [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}],
+            [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}]
+        ],
+        column_widths=[0.4, 0.3, 0.3]  # Price chart wider
     )
     
     # Get window data
@@ -1012,30 +1015,59 @@ def plot_forecast_analysis(
                 row=1, col=2
             )
     else:
-        # Fallback: Show neighbor distance vs return scatter
-        neighbor_cum_returns = []
-        for w in neighbor_windows:
-            cum_ret = np.sum(w.y) * 100
-            neighbor_cum_returns.append(cum_ret)
-        
-        neighbor_cum_returns = np.array(neighbor_cum_returns)
-        colors = ['#43A047' if r > 0 else '#E53935' for r in neighbor_cum_returns]
-        
-        fig.add_trace(
-            go.Scatter(
-                x=neighbor_distances,
-                y=neighbor_cum_returns,
-                mode='markers',
-                name='Neighbors',
-                marker=dict(size=12, color=colors, line=dict(width=1, color='white')),
-                hovertemplate="Distance: %{x:.2e}<br>Return: %{y:.2f}%<extra></extra>"
-            ),
+        # No regime timeline - add placeholder text
+        fig.add_annotation(
+            text="Regime timeline not available",
+            xref="x2", yref="y2",
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=12, color="gray"),
             row=1, col=2
         )
-        fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=1, col=2)
     
     # =========================================================================
-    # SUBPLOT 3: Cumulative Return Over Horizon (bottom-left)
+    # SUBPLOT 3: KNN Neighbor Analysis (top-right)
+    # Shows Distance vs Return for each neighbor - helps understand forecast quality
+    # =========================================================================
+    
+    neighbor_cum_returns = []
+    for w in neighbor_windows:
+        cum_ret = np.sum(w.y) * 100  # Convert to percentage
+        neighbor_cum_returns.append(cum_ret)
+    
+    neighbor_cum_returns = np.array(neighbor_cum_returns)
+    colors = ['#43A047' if r > 0 else '#E53935' for r in neighbor_cum_returns]
+    
+    fig.add_trace(
+        go.Scatter(
+            x=neighbor_distances,
+            y=neighbor_cum_returns,
+            mode='markers',
+            name='Neighbors',
+            marker=dict(size=12, color=colors, line=dict(width=1, color='white')),
+            hovertemplate="Distance: %{x:.2e}<br>Return: %{y:.2f}%<extra></extra>",
+            showlegend=False
+        ),
+        row=1, col=3
+    )
+    
+    # Zero line for reference
+    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=1, col=3)
+    
+    # Add annotation explaining the chart
+    up_count = np.sum(neighbor_cum_returns > 0)
+    down_count = np.sum(neighbor_cum_returns < 0)
+    fig.add_annotation(
+        text=f"UP: {up_count} | DOWN: {down_count}",
+        xref="x3 domain", yref="y3 domain",
+        x=0.5, y=1.02,
+        showarrow=False,
+        font=dict(size=10, color="black"),
+        row=1, col=3
+    )
+    
+    # =========================================================================
+    # SUBPLOT 4: Cumulative Return Over Horizon (bottom-left)
     # =========================================================================
     
     cum_forecast = np.cumsum(forecast_returns) * 100
@@ -1085,7 +1117,7 @@ def plot_forecast_analysis(
     fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=2, col=1)
     
     # =========================================================================
-    # SUBPLOT 4: Residual Analysis (bottom-right)
+    # SUBPLOT 5: Residual Analysis (bottom-middle)
     # =========================================================================
     
     residuals = (forecast_returns - actual_returns) * 100  # As percentage
@@ -1208,14 +1240,16 @@ def plot_forecast_analysis(
             borderwidth=2
         )
     
-    # Update axes labels
+    # Update axes labels for 2x3 layout
     fig.update_xaxes(title_text="Time", row=1, col=1)
     fig.update_xaxes(title_text="Date", row=1, col=2)
+    fig.update_xaxes(title_text="Distance (WDTW)", row=1, col=3)
     fig.update_xaxes(title_text="Bar", row=2, col=1)
     fig.update_xaxes(title_text="Bar", row=2, col=2)
     
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Regime", row=1, col=2, showticklabels=False)
+    fig.update_yaxes(title_text="Return (%)", row=1, col=3)
     fig.update_yaxes(title_text="Cumulative Return (%)", row=2, col=1)
     fig.update_yaxes(title_text="Residual (%)", row=2, col=2)
     
