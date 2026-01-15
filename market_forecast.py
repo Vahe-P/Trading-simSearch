@@ -18,13 +18,13 @@ from sim_search.config import ForecastConfig
 from sim_search.forecaster import (
     prepare_panel_data, similarity_search, regime_aware_similarity_search,
     forecast_from_neighbors, score_forecast,
-    calculate_forecast_percentiles, forecast_clusters
+    calculate_forecast_percentiles
 )
 from sim_search.times import set_default_tz, resample
 from sim_search.visualization import (
     plot_forecast_bands, 
-    plot_forecast_with_percentile_bands,
-    plot_forecast_clusters,
+    plot_probability_cone,
+    plot_scenarios,
     plot_with_volatility
 )
 from sim_search.windowing import partition_time_anchored
@@ -344,13 +344,11 @@ def main():
     
     # Report 2: Probability Cone (percentile bands)
     print("\n  📊 Creating probability cone report...")
-    fig_bands = plot_forecast_with_percentile_bands(
+    fig_bands = plot_probability_cone(
         cutoff=test_cutoff,
-        percentile_bands=regime_result['bands'],
-        window_size=window_size,
+        forecast_returns=regime_result['forecast'],
+        neighbor_horizons=regime_result['neighbor_horizons'],
         df_original=df,
-        actual_returns=y_test,
-        score_dict=regime_result['score'],
         title=f"Probability Cone - Regime-Aware WDTW (k={config.n_neighbors})",
         plot_width=config.plot_width,
         plot_height=config.plot_height
@@ -378,24 +376,19 @@ def main():
     fig_neighbors.write_html("report_neighbors.html", full_html=True, auto_open=False)
     print("     ✓ Saved: report_neighbors.html")
     
-    # Report 4: Clustered scenarios
-    print("\n  📊 Creating scenario clusters report...")
-    cluster_data = forecast_clusters(regime_result['neighbor_horizons'])
-    print(f"     Found {cluster_data['n_clusters']} distinct scenarios:")
-    for i, prob in enumerate(cluster_data['probabilities']):
-        print(f"       Scenario {i+1}: {prob:.1%} probability")
-    
-    fig_clusters = plot_forecast_clusters(
+    # Report 4: Scenario paths
+    print("\n  📊 Creating scenario paths report...")
+    fig_scenarios = plot_scenarios(
         cutoff=test_cutoff,
-        cluster_data=cluster_data,
-        window_size=window_size,
+        forecast_returns=regime_result['forecast'],
+        neighbor_horizons=regime_result['neighbor_horizons'],
+        neighbor_labels=neighbor_labels_for_plot,
         df_original=df,
-        actual_returns=y_test,
         title=f"Forecast Scenarios - Regime-Aware WDTW",
         plot_width=config.plot_width,
         plot_height=config.plot_height
     )
-    fig_clusters.write_html("report_scenarios.html", full_html=True, auto_open=False)
+    fig_scenarios.write_html("report_scenarios.html", full_html=True, auto_open=False)
     print("     ✓ Saved: report_scenarios.html")
     
     # =========================================================================
