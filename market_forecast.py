@@ -18,7 +18,7 @@ from sim_search.config import ForecastConfig
 from sim_search.forecaster import (
     prepare_panel_data, similarity_search, regime_aware_similarity_search,
     forecast_from_neighbors, score_forecast,
-    calculate_forecast_percentiles
+    calculate_forecast_percentiles, compute_signal_quality
 )
 from sim_search.times import set_default_tz, resample
 from sim_search.visualization import (
@@ -321,6 +321,41 @@ def main():
     
     same_regime_neighbors = np.sum(neighbor_regimes == test_regime)
     print(f"\n  Same-regime neighbors: {same_regime_neighbors}/{config.n_neighbors} ({same_regime_neighbors/config.n_neighbors*100:.0f}%)")
+    
+    # =========================================================================
+    # SIGNAL QUALITY ASSESSMENT
+    # =========================================================================
+    print_header("Signal Quality Assessment")
+    
+    signal_quality = compute_signal_quality(
+        regime_result['neighbor_horizons'].to_numpy(),
+        regime_result['neighbor_distances']
+    )
+    
+    # Visual indicators
+    if signal_quality['signal'] == "TRADE":
+        signal_icon = "🟢"
+    elif signal_quality['signal'] == "CAUTION":
+        signal_icon = "🟡"
+    else:
+        signal_icon = "🔴"
+    
+    print(f"""
+  ┌────────────────────────────────────────────────────────────────────┐
+  │                    SIGNAL QUALITY                                  │
+  ├────────────────────────────────────────────────────────────────────┤
+  │  SIGNAL:      {signal_quality['signal']:12s}  {signal_icon}                                   │
+  │  DIRECTION:   {signal_quality['direction']:12s}                                       │
+  │  STRENGTH:    {signal_quality['signal_strength']:12s}                                       │
+  ├────────────────────────────────────────────────────────────────────┤
+  │  CONFIDENCE:  {signal_quality['confidence']*100:5.1f}%  ({signal_quality['stats']['up_count']}/{config.n_neighbors} bullish, {signal_quality['stats']['down_count']}/{config.n_neighbors} bearish)          │
+  │  ANOMALY:     {signal_quality['anomaly_score']*100:5.1f}%  (avg dist: {signal_quality['stats']['avg_distance']:.2e})              │
+  └────────────────────────────────────────────────────────────────────┘
+""")
+    
+    print("  Interpretation:")
+    for line in signal_quality['interpretation']:
+        print(f"    • {line}")
     
     # =========================================================================
     # GENERATE HTML REPORTS

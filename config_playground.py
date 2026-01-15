@@ -66,7 +66,7 @@ if __name__ == "__main__":
         RegimeFilter, CalendarFilter, FilterPipeline,
         REGIME_NAMES
     )
-    from sim_search.forecaster import similarity_search, forecast_from_neighbors, score_forecast
+    from sim_search.forecaster import similarity_search, forecast_from_neighbors, score_forecast, compute_signal_quality
     from sim_search.visualization import plot_forecast_analysis
     
     print("\n" + "="*80)
@@ -510,18 +510,66 @@ if __name__ == "__main__":
     print("   +------+------------+------------+------------+")
     
     # =========================================================================
-    # INTERPRETATION GUIDE
+    # SIGNAL QUALITY - Confidence + Anomaly Detection
     # =========================================================================
+    
+    signal_quality = compute_signal_quality(neighbor_horizons, neighbor_dists)
     
     up_avg = np.mean([r for r in horizon_returns if r > 0]) if up_neighbors > 0 else 0
     down_avg = np.mean([r for r in horizon_returns if r < 0]) if down_neighbors > 0 else 0
     
+    # Visual indicators for signal
+    if signal_quality['signal'] == "TRADE":
+        signal_icon = "[***]"
+        signal_bar = "##########"
+    elif signal_quality['signal'] == "CAUTION":
+        signal_icon = "[**-]"
+        signal_bar = "######----"
+    else:
+        signal_icon = "[---]"
+        signal_bar = "----------"
+    
+    conf_bar = "#" * int(signal_quality['confidence'] * 10) + "-" * (10 - int(signal_quality['confidence'] * 10))
+    anom_bar = "#" * int(signal_quality['anomaly_score'] * 10) + "-" * (10 - int(signal_quality['anomaly_score'] * 10))
+    
     print(f"""
    ==============================================================================
-                              INTERPRETATION GUIDE
+                         SIGNAL QUALITY ASSESSMENT
    ==============================================================================
    
-   WHAT THIS FORECAST MEANS:
+   This system does NOT just say "price will go up."
+   It tells you: "How confident am I? Is this pattern unusual?"
+   
+   +----------------------------------------------------------------------------+
+   |                                                                            |
+   |   SIGNAL:      {signal_quality['signal']:12s}  {signal_icon}  {signal_bar}                    |
+   |   DIRECTION:   {signal_quality['direction']:12s}                                            |
+   |   STRENGTH:    {signal_quality['signal_strength']:12s}                                            |
+   |                                                                            |
+   +----------------------------------------------------------------------------+
+   
+   CONFIDENCE SCORE: {signal_quality['confidence']*100:5.1f}%  [{conf_bar}]
+      |-- What % of neighbors agree on direction?
+      |-- {signal_quality['stats']['up_count']}/{len(neighbor_idx)} bullish, {signal_quality['stats']['down_count']}/{len(neighbor_idx)} bearish
+      +-- High confidence (>70%) = neighbors agree, clearer signal
+   
+   ANOMALY SCORE:    {signal_quality['anomaly_score']*100:5.1f}%  [{anom_bar}]
+      |-- Are the neighbors far away? (unusual pattern)
+      |-- Avg distance: {signal_quality['stats']['avg_distance']:.2e}
+      +-- High anomaly (>50%) = pattern is unusual, expect volatility
+   
+   ==============================================================================
+                              INTERPRETATION
+   ==============================================================================
+""")
+    
+    for line in signal_quality['interpretation']:
+        print(f"   {line}")
+    
+    print(f"""
+   ------------------------------------------------------------------------------
+   
+   WHAT THIS MEANS:
    
    We found {len(neighbor_idx)} historical patterns from {test.regime_name}-volatility days that
    looked similar to today's pattern (ending at {str(test.cutoff)[:19]}).
@@ -530,12 +578,10 @@ if __name__ == "__main__":
    - {up_neighbors} went UP afterward (avg: {up_avg:.4f}%)
    - {down_neighbors} went DOWN afterward (avg: {down_avg:.4f}%)
    
-   Based on this, the model forecasts: {forecast_dir} with {abs(forecast_ret):.4f}% expected move.
-   
-   CONFIDENCE INDICATORS:
-   - Neighbor agreement:     {max(up_neighbors, down_neighbors)/len(neighbor_idx)*100:.0f}% ({max(up_neighbors, down_neighbors)}/{len(neighbor_idx)} neighbors agree)
-   - Distance spread:        {neighbor_dists.min():.2e} to {neighbor_dists.max():.2e}
-   - Avg neighbor distance:  {np.mean(neighbor_dists):.2e}
+   If ANOMALY is HIGH:
+      "The market is about to stop behaving normally."
+      -> This is NOT a failure - it's valuable information.
+      -> High anomaly = unusual market structure, expect surprises.
    
    ==============================================================================
 """)
@@ -556,6 +602,7 @@ if __name__ == "__main__":
         neighbor_distances=neighbor_dists,
         score_dict=score,
         regime=test.regime,
+        signal_quality=signal_quality,
         title=f"Forecast Analysis (k={N_NEIGHBORS}, {DISTANCE_METRIC.upper()})",
         hist_context_bars=100
     )

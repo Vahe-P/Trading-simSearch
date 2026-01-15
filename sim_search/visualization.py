@@ -812,6 +812,7 @@ def plot_forecast_analysis(
     neighbor_distances: np.ndarray,
     score_dict: Dict[str, float],
     regime: int = -1,
+    signal_quality: Optional[Dict[str, Any]] = None,
     title: str = "Forecast Analysis",
     plot_width: int = 1600,
     plot_height: int = 1000,
@@ -1107,6 +1108,54 @@ def plot_forecast_analysis(
         bordercolor="black",
         borderwidth=1
     )
+    
+    # Add Signal Quality annotation if provided
+    if signal_quality is not None:
+        # Color based on signal
+        if signal_quality['signal'] == "TRADE":
+            signal_color = "#43A047"  # Green
+            signal_icon = "TRADE"
+        elif signal_quality['signal'] == "CAUTION":
+            signal_color = "#FFA726"  # Orange
+            signal_icon = "CAUTION"
+        else:
+            signal_color = "#E53935"  # Red
+            signal_icon = "NO TRADE"
+        
+        signal_text = (
+            f"<b>SIGNAL QUALITY</b><br>"
+            f"<span style='color:{signal_color};font-size:14px'><b>{signal_icon}</b></span><br>"
+            f"Direction: <b>{signal_quality['direction']}</b><br>"
+            f"Confidence: {signal_quality['confidence']*100:.0f}%<br>"
+            f"Anomaly: {signal_quality['anomaly_score']*100:.0f}%<br>"
+            f"<br>"
+            f"<b>What This Means:</b><br>"
+        )
+        
+        # Add interpretation lines
+        for interp in signal_quality['interpretation'][:2]:  # First 2 lines
+            signal_text += f"{interp}<br>"
+        
+        signal_text += (
+            f"<br>"
+            f"<b>Regime Bet:</b><br>"
+            f"Pattern from {regime_name} vol<br>"
+            f"regime. Betting that similar<br>"
+            f"historical patterns predict<br>"
+            f"future movement."
+        )
+        
+        fig.add_annotation(
+            text=signal_text,
+            xref="paper", yref="paper",
+            x=1.02, y=0.65,
+            showarrow=False,
+            font=dict(size=10, family="Courier"),
+            align="left",
+            bgcolor="rgba(255,255,255,0.95)",
+            bordercolor=signal_color,
+            borderwidth=2
+        )
     
     # Update axes labels
     fig.update_xaxes(title_text="Time", row=1, col=1)

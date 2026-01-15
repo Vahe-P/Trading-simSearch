@@ -453,6 +453,142 @@ def score_forecast(y_pred, y_true):
     }
 
 
+def compute_signal_quality(
+    neighbor_horizons: np.ndarray,
+    neighbor_distances: np.ndarray,
+    distance_threshold: float = None
+) -> Dict[str, Any]:
+    """
+    Compute confidence and anomaly scores for the forecast.
+    
+    This transforms the system from just "LONG/SHORT" to:
+    - Direction + Confidence + Anomaly detection
+    
+    Parameters
+    ----------
+    neighbor_horizons : np.ndarray
+        Array of shape (n_neighbors, horizon_len) - the outcomes of neighbors
+    neighbor_distances : np.ndarray
+        Distance to each neighbor (lower = more similar)
+    distance_threshold : float, optional
+        Threshold above which to consider a match "poor"
+        If None, uses median * 2 as adaptive threshold
+        
+    Returns
+    -------
+    dict containing:
+        - direction: "LONG", "SHORT", or "UNCLEAR"
+        - confidence: 0.0 to 1.0 (neighbor agreement)
+        - anomaly_score: 0.0 to 1.0 (how unusual is this pattern)
+        - signal: "TRADE", "CAUTION", or "NO_TRADE"
+        - interpretation: human-readable explanation
+    """
+    n_neighbors = len(neighbor_horizons)
+    
+    # =========================================================================
+    # CONFIDENCE: Do neighbors agree on direction?
+    # =========================================================================
+    neighbor_returns = np.sum(neighbor_horizons, axis=1)  # Total return per neighbor
+    up_count = np.sum(neighbor_returns > 0)
+    down_count = np.sum(neighbor_returns < 0)
+    flat_count = np.sum(neighbor_returns == 0)
+    
+    agreement = max(up_count, down_count) / n_neighbors
+    confidence = agreement  # 0.5 = split, 1.0 = unanimous
+    
+    # Direction based on majority
+    if up_count > down_count:
+        direction = "LONG"
+        direction_pct = up_count / n_neighbors
+    elif down_count > up_count:
+        direction = "SHORT"
+        direction_pct = down_count / n_neighbors
+    else:
+        direction = "UNCLEAR"
+        direction_pct = 0.5
+    
+    # =========================================================================
+    # ANOMALY: Are neighbors far away? (unusual pattern)
+    # =========================================================================
+    avg_distance = np.mean(neighbor_distances)
+    min_distance = np.min(neighbor_distances)
+    max_distance = np.max(neighbor_distances)
+    distance_spread = max_distance - min_distance
+    
+    # Adaptive threshold: if distances are very small (like 1e-13), 
+    # we need to scale appropriately
+    if distance_threshold is None:
+        # Use relative measure: how spread out are the distances?
+        median_dist = np.median(neighbor_distances)
+        distance_threshold = median_dist * 3 if median_dist > 0 else 1e-10
+    
+    # Anomaly score: what fraction of neighbors exceed threshold?
+    poor_matches = np.sum(neighbor_distances > distance_threshold)
+    anomaly_score = poor_matches / n_neighbors
+    
+    # Also consider if ALL distances are high (no good matches at all)
+    if min_distance > distance_threshold:
+        anomaly_score = 1.0  # All matches are poor
+    
+    # =========================================================================
+    # SIGNAL: Combine confidence + anomaly into actionable signal
+    # =========================================================================
+    if confidence >= 0.7 and anomaly_score <= 0.3:
+        signal = "TRADE"
+        signal_strength = "STRONG" if confidence >= 0.8 else "MODERATE"
+    elif confidence >= 0.6 and anomaly_score <= 0.5:
+        signal = "CAUTION"
+        signal_strength = "WEAK"
+    else:
+        signal = "NO_TRADE"
+        signal_strength = "NONE"
+    
+    # =========================================================================
+    # INTERPRETATION: Human-readable explanation
+    # =========================================================================
+    interpretations = []
+    
+    if confidence >= 0.8:
+        interpretations.append(f"{int(direction_pct*100)}% of neighbors agree on {direction}")
+    elif confidence >= 0.6:
+        interpretations.append(f"Moderate agreement ({int(direction_pct*100)}%) on {direction}")
+    else:
+        interpretations.append(f"Neighbors disagree - no clear direction")
+    
+    if anomaly_score >= 0.7:
+        interpretations.append("UNUSUAL PATTERN - no good historical matches")
+    elif anomaly_score >= 0.4:
+        interpretations.append("Some neighbors are poor matches - elevated uncertainty")
+    else:
+        interpretations.append("Good historical matches found")
+    
+    if signal == "NO_TRADE":
+        interpretations.append(">> RECOMMENDATION: Stay flat or reduce exposure")
+    elif signal == "CAUTION":
+        interpretations.append(">> RECOMMENDATION: Trade with reduced size")
+    else:
+        interpretations.append(f">> RECOMMENDATION: {direction} signal with {signal_strength.lower()} conviction")
+    
+    return {
+        'direction': direction,
+        'confidence': confidence,
+        'confidence_pct': direction_pct,
+        'anomaly_score': anomaly_score,
+        'signal': signal,
+        'signal_strength': signal_strength,
+        'interpretation': interpretations,
+        'stats': {
+            'up_count': int(up_count),
+            'down_count': int(down_count),
+            'flat_count': int(flat_count),
+            'avg_distance': float(avg_distance),
+            'min_distance': float(min_distance),
+            'max_distance': float(max_distance),
+            'distance_spread': float(distance_spread)
+        }
+    }
+
+
 def dtw_tail_plus_full(x, y, *, k=40, beta=0.7, window_full=0.1, window_tail=0.05):
     d_tail = dtw_distance(x[..., -k:], y[..., -k:], window=window_tail)
     d_full = dtw_distance(x, y, window=window_full)
