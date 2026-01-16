@@ -783,11 +783,11 @@ if __name__ == "__main__":
         regime=test.regime,
         signal_quality=signal_quality,
         regime_timeline=regime_timeline,
-        title=f"Forecast Analysis (k={N_NEIGHBORS}, {DISTANCE_METRIC.upper()})",
+        title=f"{SYMBOL} - Forecast Analysis (k={N_NEIGHBORS}, {DISTANCE_METRIC.upper()})",
         hist_context_bars=100
     )
     
-    output_file = "report_playground.html"
+    output_file = f"report_{SYMBOL}.html"
     fig.write_html(output_file, full_html=True, auto_open=True)
     print(f"\n   Saved to {output_file} (opened in browser)")
     
