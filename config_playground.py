@@ -784,7 +784,7 @@ if __name__ == "__main__":
         signal_quality=signal_quality,
         regime_timeline=regime_timeline,
         title=f"{SYMBOL} - Forecast Analysis (k={N_NEIGHBORS}, {DISTANCE_METRIC.upper()})",
-        hist_context_bars=100
+        hist_context_bars=60  # Show only current session (1 hour at 1-min)
     )
     
     output_file = f"report_{SYMBOL}.html"

@@ -879,10 +879,19 @@ def plot_forecast_analysis(
         row_heights=[0.4, 0.3, 0.3]  # Price chart taller
     )
     
-    # Get window data
+    # Get window data - filter to regular trading hours only (no overnight gaps)
     cutoff_loc = df.index.get_loc(cutoff)
     hist_start = max(0, cutoff_loc - hist_context_bars)
-    window_df = df.iloc[hist_start:cutoff_loc + 1]
+    window_df = df.iloc[hist_start:cutoff_loc + 1].copy()
+    
+    # Filter to regular market hours (9:30 AM - 4:00 PM) to avoid overnight gaps
+    if hasattr(window_df.index, 'hour'):
+        market_hours_mask = (
+            (window_df.index.hour > 9) | 
+            ((window_df.index.hour == 9) & (window_df.index.minute >= 30))
+        ) & (window_df.index.hour < 16)
+        window_df = window_df[market_hours_mask]
+    
     horizon_size = len(forecast_returns)
     
     # Create forecast time index
