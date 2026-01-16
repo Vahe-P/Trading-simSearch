@@ -858,24 +858,25 @@ def plot_forecast_analysis(
     """
     from .volatility import REGIME_NAMES, REGIME_COLORS
     
-    # Create 2x3 subplot layout (5 charts + 1 empty for annotations)
+    # Create 3x2 subplot layout (6 charts)
     fig = make_subplots(
-        rows=2, cols=3,
+        rows=3, cols=2,
         subplot_titles=[
             'Price Forecast vs Actual',
-            'Regime Timeline',
             'KNN Neighbor Analysis',
+            'Volatility Over Time (Regime Detection)',
+            'Regime Timeline',
             'Cumulative Return Over Horizon',
-            'Forecast Residuals',
-            ''  # Empty for signal quality annotation area
+            'Forecast Residuals'
         ],
-        vertical_spacing=0.12,
-        horizontal_spacing=0.06,
+        vertical_spacing=0.08,
+        horizontal_spacing=0.08,
         specs=[
-            [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}],
-            [{"type": "xy"}, {"type": "xy"}, {"type": "xy"}]
+            [{"type": "xy"}, {"type": "xy"}],
+            [{"type": "xy"}, {"type": "xy"}],
+            [{"type": "xy"}, {"type": "xy"}]
         ],
-        column_widths=[0.4, 0.3, 0.3]  # Price chart wider
+        row_heights=[0.4, 0.3, 0.3]  # Price chart taller
     )
     
     # Get window data
@@ -955,78 +956,7 @@ def plot_forecast_analysis(
         )
     
     # =========================================================================
-    # SUBPLOT 2: Regime Timeline (top-right)
-    # =========================================================================
-    
-    if regime_timeline is not None and 'cutoffs' in regime_timeline and 'regimes' in regime_timeline:
-        # Use full regime timeline
-        timeline_cutoffs = regime_timeline['cutoffs']
-        timeline_regimes = regime_timeline['regimes']
-        
-        # Limit to last N windows for readability
-        max_windows = 50
-        if len(timeline_cutoffs) > max_windows:
-            timeline_cutoffs = timeline_cutoffs[-max_windows:]
-            timeline_regimes = timeline_regimes[-max_windows:]
-        
-        # Create bar chart showing regime over time
-        regime_colors_solid = {0: '#43A047', 1: '#FFA726', 2: '#E53935'}
-        bar_colors = [regime_colors_solid.get(r, 'gray') for r in timeline_regimes]
-        
-        fig.add_trace(
-            go.Bar(
-                x=timeline_cutoffs,
-                y=[1] * len(timeline_cutoffs),  # All bars same height
-                marker_color=bar_colors,
-                name='Regime',
-                showlegend=False,
-                hovertemplate="%{x}<br>Regime: %{customdata}<extra></extra>",
-                customdata=[REGIME_NAMES.get(r, '?') for r in timeline_regimes]
-            ),
-            row=1, col=2
-        )
-        
-        # Add current window marker (use shape instead of vline for timestamp compatibility)
-        fig.add_shape(
-            type="line",
-            x0=cutoff, x1=cutoff,
-            y0=0, y1=1.2,
-            line=dict(color="black", width=3),
-            row=1, col=2
-        )
-        fig.add_annotation(
-            x=cutoff, y=1.1,
-            text="NOW",
-            showarrow=False,
-            font=dict(size=12, color="black"),
-            row=1, col=2
-        )
-        
-        # Add legend for regimes
-        for regime_id, color in regime_colors_solid.items():
-            fig.add_trace(
-                go.Scatter(
-                    x=[None], y=[None],
-                    mode='markers',
-                    marker=dict(size=10, color=color),
-                    name=f'{REGIME_NAMES.get(regime_id, "?")} Vol',
-                    showlegend=True
-                ),
-                row=1, col=2
-            )
-    else:
-        # No regime timeline - add placeholder text
-        fig.add_annotation(
-            text="Regime timeline not available",
-            xref="x2", yref="y2",
-            x=0.5, y=0.5,
-            showarrow=False,
-            font=dict(size=12, color="gray"),
-            row=1, col=2
-        )
-    
-    # =========================================================================
-    # SUBPLOT 3: KNN Neighbor Analysis (top-right)
+    # SUBPLOT 2: KNN Neighbor Analysis (top-right)
     # Shows Distance vs Return for each neighbor - helps understand forecast quality
     # =========================================================================
     
@@ -1048,26 +978,147 @@ def plot_forecast_analysis(
             hovertemplate="Distance: %{x:.2e}<br>Return: %{y:.2f}%<extra></extra>",
             showlegend=False
         ),
-        row=1, col=3
+        row=1, col=2
     )
     
     # Zero line for reference
-    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=1, col=3)
+    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=1, col=2)
     
     # Add annotation explaining the chart
     up_count = np.sum(neighbor_cum_returns > 0)
     down_count = np.sum(neighbor_cum_returns < 0)
     fig.add_annotation(
         text=f"UP: {up_count} | DOWN: {down_count}",
-        xref="x3 domain", yref="y3 domain",
+        xref="x2 domain", yref="y2 domain",
         x=0.5, y=1.02,
         showarrow=False,
         font=dict(size=10, color="black"),
-        row=1, col=3
+        row=1, col=2
     )
     
     # =========================================================================
-    # SUBPLOT 4: Cumulative Return Over Horizon (bottom-left)
+    # SUBPLOT 3: Volatility Over Time (middle-left)
+    # Shows GK volatility with regime thresholds
+    # =========================================================================
+    
+    if regime_timeline is not None and 'volatilities' in regime_timeline:
+        timeline_cutoffs = regime_timeline['cutoffs']
+        timeline_vols = regime_timeline['volatilities']
+        timeline_regimes = regime_timeline['regimes']
+        thresholds = regime_timeline.get('thresholds', [])
+        
+        # Limit to last N windows
+        max_windows = 50
+        if len(timeline_cutoffs) > max_windows:
+            timeline_cutoffs = timeline_cutoffs[-max_windows:]
+            timeline_vols = timeline_vols[-max_windows:]
+            timeline_regimes = timeline_regimes[-max_windows:]
+        
+        # Color by regime
+        regime_colors_solid = {0: '#43A047', 1: '#FFA726', 2: '#E53935'}
+        vol_colors = [regime_colors_solid.get(r, 'gray') for r in timeline_regimes]
+        
+        fig.add_trace(
+            go.Scatter(
+                x=timeline_cutoffs,
+                y=timeline_vols,
+                mode='lines+markers',
+                name='Volatility',
+                line=dict(color='#1976D2', width=2),
+                marker=dict(size=8, color=vol_colors, line=dict(width=1, color='white')),
+                hovertemplate="%{x}<br>Vol: %{y:.6f}<br>Regime: %{customdata}<extra></extra>",
+                customdata=[REGIME_NAMES.get(r, '?') for r in timeline_regimes],
+                showlegend=False
+            ),
+            row=2, col=1
+        )
+        
+        # Add threshold lines
+        if len(thresholds) >= 2:
+            fig.add_hline(y=thresholds[0], line_dash="dash", line_color="#43A047", 
+                         annotation_text="LOW/MED", row=2, col=1)
+            fig.add_hline(y=thresholds[1], line_dash="dash", line_color="#E53935",
+                         annotation_text="MED/HIGH", row=2, col=1)
+        
+        # Mark current position
+        fig.add_shape(
+            type="line",
+            x0=cutoff, x1=cutoff,
+            y0=0, y1=max(timeline_vols) * 1.1,
+            line=dict(color="black", width=2, dash="dot"),
+            row=2, col=1
+        )
+    else:
+        fig.add_annotation(
+            text="Volatility data not available",
+            xref="x3", yref="y3",
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=12, color="gray"),
+            row=2, col=1
+        )
+    
+    # =========================================================================
+    # SUBPLOT 4: Regime Timeline (middle-right)
+    # =========================================================================
+    
+    if regime_timeline is not None and 'cutoffs' in regime_timeline and 'regimes' in regime_timeline:
+        timeline_cutoffs = regime_timeline['cutoffs']
+        timeline_regimes = regime_timeline['regimes']
+        
+        # Limit to last N windows
+        max_windows = 50
+        if len(timeline_cutoffs) > max_windows:
+            timeline_cutoffs = timeline_cutoffs[-max_windows:]
+            timeline_regimes = timeline_regimes[-max_windows:]
+        
+        regime_colors_solid = {0: '#43A047', 1: '#FFA726', 2: '#E53935'}
+        bar_colors = [regime_colors_solid.get(r, 'gray') for r in timeline_regimes]
+        
+        fig.add_trace(
+            go.Bar(
+                x=timeline_cutoffs,
+                y=[1] * len(timeline_cutoffs),
+                marker_color=bar_colors,
+                name='Regime',
+                showlegend=False,
+                hovertemplate="%{x}<br>Regime: %{customdata}<extra></extra>",
+                customdata=[REGIME_NAMES.get(r, '?') for r in timeline_regimes]
+            ),
+            row=2, col=2
+        )
+        
+        # Mark current position
+        fig.add_shape(
+            type="line",
+            x0=cutoff, x1=cutoff,
+            y0=0, y1=1.2,
+            line=dict(color="black", width=3),
+            row=2, col=2
+        )
+        fig.add_annotation(
+            x=cutoff, y=1.1,
+            text="NOW",
+            showarrow=False,
+            font=dict(size=10, color="black"),
+            row=2, col=2
+        )
+        
+        # Legend
+        for regime_id, color in regime_colors_solid.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=[None], y=[None],
+                    mode='markers',
+                    marker=dict(size=10, color=color),
+                    name=f'{REGIME_NAMES.get(regime_id, "?")} Vol',
+                    showlegend=True
+                ),
+                row=2, col=2
+            )
+    
+    # =========================================================================
+    # SUBPLOT 5: Cumulative Return Over Horizon (bottom-left)
     # =========================================================================
     
     cum_forecast = np.cumsum(forecast_returns) * 100
@@ -1084,7 +1135,7 @@ def plot_forecast_analysis(
             marker=dict(size=4),
             showlegend=False
         ),
-        row=2, col=1
+        row=3, col=1
     )
     
     fig.add_trace(
@@ -1097,7 +1148,7 @@ def plot_forecast_analysis(
             marker=dict(size=4),
             showlegend=False
         ),
-        row=2, col=1
+        row=3, col=1
     )
     
     # Fill between
@@ -1111,13 +1162,13 @@ def plot_forecast_analysis(
             showlegend=False,
             hoverinfo='skip'
         ),
-        row=2, col=1
+        row=3, col=1
     )
     
-    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=2, col=1)
+    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=0.5, row=3, col=1)
     
     # =========================================================================
-    # SUBPLOT 5: Residual Analysis (bottom-middle)
+    # SUBPLOT 6: Residual Analysis (bottom-right)
     # =========================================================================
     
     residuals = (forecast_returns - actual_returns) * 100  # As percentage
@@ -1133,14 +1184,14 @@ def plot_forecast_analysis(
             marker_color=colors_resid,
             showlegend=False
         ),
-        row=2, col=2
+        row=3, col=2
     )
     
     # Add +/- 1 std bands
     resid_std = np.std(residuals)
-    fig.add_hline(y=resid_std, line_dash="dash", line_color="gray", row=2, col=2)
-    fig.add_hline(y=-resid_std, line_dash="dash", line_color="gray", row=2, col=2)
-    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=1, row=2, col=2)
+    fig.add_hline(y=resid_std, line_dash="dash", line_color="gray", row=3, col=2)
+    fig.add_hline(y=-resid_std, line_dash="dash", line_color="gray", row=3, col=2)
+    fig.add_hline(y=0, line_dash="solid", line_color="black", line_width=1, row=3, col=2)
     
     # =========================================================================
     # LAYOUT AND ANNOTATIONS
@@ -1174,29 +1225,49 @@ def plot_forecast_analysis(
     # Add Signal Quality annotation if provided
     if signal_quality is not None:
         # Color based on signal
+        direction = signal_quality['direction']
+        confidence = signal_quality['confidence'] * 100
+        anomaly = signal_quality['anomaly_score'] * 100
+        
         if signal_quality['signal'] == "TRADE":
             signal_color = "#43A047"  # Green
             signal_icon = "TRADE"
+            trade_decision = (
+                f"<b>WE TRADE:</b> Go <b>{direction}</b>.<br>"
+                f"{int(confidence)}% of neighbors agree on direction,<br>"
+                f"and only {int(anomaly)}% are anomalies.<br>"
+                f"<span style='color:#43A047'>Signal is reliable.</span>"
+            )
         elif signal_quality['signal'] == "CAUTION":
             signal_color = "#FFA726"  # Orange
             signal_icon = "CAUTION"
+            trade_decision = (
+                f"<b>CAUTION:</b> Direction is <b>{direction}</b>,<br>"
+                f"but confidence is only {int(confidence)}%<br>"
+                f"or anomaly score is {int(anomaly)}%.<br>"
+                f"<span style='color:#FFA726'>Reduce position size.</span>"
+            )
         else:
             signal_color = "#E53935"  # Red
             signal_icon = "NO TRADE"
+            trade_decision = (
+                f"<b>NO TRADE:</b> Signal unclear.<br>"
+                f"Only {int(confidence)}% neighbor agreement<br>"
+                f"and/or {int(anomaly)}% anomaly rate.<br>"
+                f"<span style='color:#E53935'>Stay flat, wait for better setup.</span>"
+            )
         
         signal_text = (
             f"<b>SIGNAL QUALITY</b><br>"
-            f"<span style='color:{signal_color};font-size:14px'><b>{signal_icon}</b></span><br>"
-            f"Direction: <b>{signal_quality['direction']}</b><br>"
-            f"Confidence: {signal_quality['confidence']*100:.0f}%<br>"
-            f"Anomaly: {signal_quality['anomaly_score']*100:.0f}%<br>"
+            f"<span style='color:{signal_color};font-size:16px'><b>{signal_icon}</b></span><br>"
             f"<br>"
-            f"<b>What This Means:</b><br>"
+            f"{trade_decision}<br>"
+            f"<br>"
+            f"<b>Metrics:</b><br>"
+            f"Direction: <b>{direction}</b><br>"
+            f"Confidence: {confidence:.0f}%<br>"
+            f"Anomaly: {anomaly:.0f}%<br>"
         )
-        
-        # Add interpretation lines
-        for interp in signal_quality['interpretation'][:2]:  # First 2 lines
-            signal_text += f"{interp}<br>"
         
         # Add regime stability info
         regime_stability = signal_quality.get('regime_stability', 'N/A')
@@ -1212,21 +1283,12 @@ def plot_forecast_analysis(
         
         signal_text += (
             f"<br>"
-            f"<b>Regime Status:</b><br>"
-            f"Current: {regime_name}<br>"
-            f"Stability: <span style='color:{stability_color}'>{regime_stability}</span><br>"
-            f"Windows in regime: {windows_in_regime}<br>"
+            f"<b>Regime:</b> {regime_name}<br>"
+            f"Stability: <span style='color:{stability_color}'><b>{regime_stability}</b></span><br>"
         )
         
         if is_transitioning:
-            signal_text += f"<span style='color:#E53935'><b>TRANSITIONING!</b></span><br>"
-        
-        # Add regime history if available
-        regime_history = signal_quality.get('regime_history', [])
-        if regime_history:
-            signal_text += f"<br><b>Recent History:</b><br>"
-            for rname, rcount in regime_history[:3]:
-                signal_text += f"{rname}: {rcount} windows<br>"
+            signal_text += f"<span style='color:#E53935'><b>REGIME CHANGING!</b></span><br>"
         
         fig.add_annotation(
             text=signal_text,
@@ -1240,25 +1302,31 @@ def plot_forecast_analysis(
             borderwidth=2
         )
     
-    # Update axes labels for 2x3 layout
+    # Update axes labels for 3x2 layout
+    # Row 1: Price Forecast | KNN Neighbors
     fig.update_xaxes(title_text="Time", row=1, col=1)
-    fig.update_xaxes(title_text="Date", row=1, col=2)
-    fig.update_xaxes(title_text="Distance (WDTW)", row=1, col=3)
-    fig.update_xaxes(title_text="Bar", row=2, col=1)
-    fig.update_xaxes(title_text="Bar", row=2, col=2)
-    
+    fig.update_xaxes(title_text="Distance (WDTW)", row=1, col=2)
     fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_yaxes(title_text="Regime", row=1, col=2, showticklabels=False)
-    fig.update_yaxes(title_text="Return (%)", row=1, col=3)
-    fig.update_yaxes(title_text="Cumulative Return (%)", row=2, col=1)
-    fig.update_yaxes(title_text="Residual (%)", row=2, col=2)
+    fig.update_yaxes(title_text="Return (%)", row=1, col=2)
+    
+    # Row 2: Volatility | Regime Timeline
+    fig.update_xaxes(title_text="Date", row=2, col=1)
+    fig.update_xaxes(title_text="Date", row=2, col=2)
+    fig.update_yaxes(title_text="Volatility (GK)", row=2, col=1)
+    fig.update_yaxes(title_text="Regime", row=2, col=2, showticklabels=False)
+    
+    # Row 3: Cumulative Return | Residuals
+    fig.update_xaxes(title_text="Bar", row=3, col=1)
+    fig.update_xaxes(title_text="Bar", row=3, col=2)
+    fig.update_yaxes(title_text="Cumulative Return (%)", row=3, col=1)
+    fig.update_yaxes(title_text="Residual (%)", row=3, col=2)
     
     fig.update_layout(
         title=dict(
             text=f"{title} | K={len(neighbor_windows)} | Regime={regime_name}",
             x=0.5
         ),
-        height=plot_height,
+        height=1200,  # Taller for 3 rows
         width=plot_width,
         template='plotly_white',
         showlegend=True,

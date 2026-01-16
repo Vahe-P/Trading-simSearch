@@ -18,10 +18,10 @@ Output:
 # =============================================================================
 
 # Option 1: Local parquet file
-DATA_SOURCE = "polygon"  # Options: "parquet", "polygon"
-DATA_PATH = "data/test/NQ_2024-09-06_2025-09-13.parquet"
+DATA_SOURCE = "parquet"
+DATA_PATH = "data/cache/QQQ_2024-01-01_2025-01-01.parquet"
 
-# Option 2: Polygon.io API (set DATA_SOURCE = "polygon")
+# Option 2: Polygon.io API (set DATA_SOURCE = "parquet"
 
 # =============================================================================
 # SYMBOL SELECTION (for API sources)
@@ -71,9 +71,9 @@ WDTW_G = 0.05                  # Default: 0.05
 # =============================================================================
 from datetime import time
 
-WINDOW_START = time(8, 0)      # Window start time (8:00 PM = overnight start)
-WINDOW_END = time(9, 30)       # Window end time (9:30 AM = market open)
-EXTEND_SESSIONS = 1            # 1 = overnight (spans to next day)
+WINDOW_START = time(9, 30)     # Window start time (market open)
+WINDOW_END = time(10, 30)      # Window end time (first trading hour)
+EXTEND_SESSIONS = 0            # 0 = same day session
 HORIZON_LEN = 20               # Bars to forecast ahead
 NORM_METHOD = "rolling_zscore"  # Options: "log_returns", "pct_change", "rolling_zscore"
 
@@ -279,9 +279,15 @@ if __name__ == "__main__":
     print(" REGIME TRANSITION ANALYSIS")
     print("-"*80)
     
-    # Get regime history and transitions
+    # Get regime history, volatilities, and transitions
     train_regimes = np.array([w.regime for w in train])
     train_cutoffs = [w.cutoff for w in train]
+    train_vols = np.array([w.volatility for w in train])
+    
+    # Get regime thresholds for visualization
+    from sim_search.volatility import compute_regime_thresholds
+    valid_vols = train_vols[~np.isnan(train_vols) & (train_vols > 0)]
+    vol_thresholds = compute_regime_thresholds(valid_vols) if len(valid_vols) > 10 else []
     
     regime_transitions = analyze_regime_transitions(
         regimes=train_regimes,
@@ -758,10 +764,12 @@ if __name__ == "__main__":
     signal_quality['is_transitioning'] = regime_transitions['is_transitioning']
     signal_quality['windows_in_regime'] = regime_transitions['windows_in_current_regime']
     
-    # Create regime timeline data for visualization
+    # Create regime timeline data for visualization (includes volatility for new chart)
     regime_timeline = {
         'cutoffs': train_cutoffs,
-        'regimes': train_regimes.tolist()
+        'regimes': train_regimes.tolist(),
+        'volatilities': train_vols.tolist(),
+        'thresholds': list(vol_thresholds) if len(vol_thresholds) > 0 else []
     }
     
     fig = plot_forecast_analysis(
