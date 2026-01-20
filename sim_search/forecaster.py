@@ -8,6 +8,8 @@ Supports multiple distance metrics including:
 
 NEW: Regime-aware similarity search that filters to same volatility regime
 before running KNN, ensuring we only compare patterns from similar market conditions.
+
+GPU SUPPORT: Automatic GPU acceleration when CuPy is available and USE_GPU=True.
 """
 
 from typing import Dict, List, Optional, Tuple, Union, Any
@@ -16,6 +18,54 @@ import numpy as np
 from aeon.regression.distance_based import KNeighborsTimeSeriesRegressor
 from aeon.distances import dtw_distance
 from loguru import logger
+import os
+
+# GPU support (optional, via CuPy)
+# Workaround for incomplete CUDA installation: patch os.add_dll_directory
+_original_add_dll_directory = os.add_dll_directory
+def _patched_add_dll_directory(path):
+    """Handle missing CUDA bin directory gracefully."""
+    if os.path.exists(path):
+        return _original_add_dll_directory(path)
+    # Return dummy context manager for missing directories
+    class _DummyDllDir:
+        def close(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    return _DummyDllDir()
+
+# Apply patch before importing CuPy (on Windows with incomplete CUDA installs)
+if os.name == 'nt':  # Windows only
+    os.add_dll_directory = _patched_add_dll_directory
+
+try:
+    import cupy as cp
+    # Test if GPU actually works (not just detected)
+    try:
+        test_arr = cp.array([1.0])
+        _ = test_arr * 2
+        GPU_AVAILABLE = True
+        logger.info(f"GPU available: {cp.cuda.Device(0).compute_capability}")
+    except RuntimeError as e:
+        # GPU detected but runtime DLLs missing
+        GPU_AVAILABLE = False
+        cp = None
+        logger.warning(f"GPU detected but runtime unavailable (NVRTC DLL missing). Install complete CUDA Toolkit. Error: {e}")
+    else:
+        GPU_AVAILABLE = cp.is_available()
+        if GPU_AVAILABLE:
+            logger.info(f"GPU available: {cp.cuda.Device(0).compute_capability}")
+except (ImportError, RuntimeError, FileNotFoundError) as e:
+    cp = None
+    GPU_AVAILABLE = False
+    logger.warning(f"GPU not available: {e}. Falling back to CPU.")
+
+# Restore original function
+if os.name == 'nt':
+    os.add_dll_directory = _original_add_dll_directory
+
+# Configuration: Enable GPU by default if available
+USE_GPU = os.getenv("USE_GPU", "true").lower() == "true" and GPU_AVAILABLE
 
 from .windowing import normalize_window
 from .clustering import cluster_paths
@@ -92,6 +142,171 @@ def prepare_panel_data(df: pd.DataFrame, intervals: pd.IntervalIndex, feature_co
     return x_panel, y_df, labels
 
 
+# =============================================================================
+# GPU-ACCELERATED DISTANCE CALCULATIONS
+# =============================================================================
+
+def _gpu_euclidean_distance_batch(x_train_gpu, x_test_gpu):
+    """
+    Compute Euclidean distances on GPU using batch operations.
+    
+    Parameters
+    ----------
+    x_train_gpu : cp.ndarray
+        Training data on GPU, shape (n_train, n_features)
+    x_test_gpu : cp.ndarray
+        Test data on GPU, shape (n_test, n_features)
+        
+    Returns
+    -------
+    cp.ndarray
+        Distances, shape (n_test, n_train)
+    """
+    if cp is None:
+        raise ImportError("CuPy not available. Install with: pip install cupy-cuda11x or cupy-cuda12x")
+    
+    # Expand dimensions for broadcasting: (n_test, 1, n_features) - (1, n_train, n_features)
+    x_test_expanded = x_test_gpu[:, cp.newaxis, :]  # (n_test, 1, n_features)
+    x_train_expanded = x_train_gpu[cp.newaxis, :, :]  # (1, n_train, n_features)
+    
+    # Compute squared differences and sum along feature axis
+    diff_squared = (x_test_expanded - x_train_expanded) ** 2
+    distances = cp.sqrt(cp.sum(diff_squared, axis=2))  # (n_test, n_train)
+    
+    return distances
+
+
+def _gpu_wdtw_distance_batch(x_train_gpu, x_test_gpu, g=0.05):
+    """
+    Compute Weighted DTW distances on GPU using batched operations.
+    
+    This is a simplified batch version. For full DTW, we'd need to iterate
+    or use more complex GPU kernels. This uses a weighted euclidean as approximation
+    when g is high (focuses on recent bars).
+    
+    Parameters
+    ----------
+    x_train_gpu : cp.ndarray
+        Training sequences on GPU, shape (n_train, seq_len)
+    x_test_gpu : cp.ndarray
+        Test sequences on GPU, shape (n_test, seq_len)
+    g : float
+        Weight decay parameter (higher = more weight on recent bars)
+        
+    Returns
+    -------
+    cp.ndarray
+        Distances, shape (n_test, n_train)
+    """
+    if cp is None:
+        raise ImportError("CuPy not available. Install with: pip install cupy-cuda11x or cupy-cuda12x")
+    
+    seq_len = x_test_gpu.shape[1]
+    
+    # Create weights: exponentially decreasing from end to start
+    # Higher g = more emphasis on recent bars
+    weights = cp.exp(-g * cp.arange(seq_len, dtype=cp.float32)[::-1])
+    weights = weights / cp.sum(weights)  # Normalize
+    
+    # Apply weights: element-wise multiplication along time dimension
+    x_test_weighted = x_test_gpu * weights[cp.newaxis, :]
+    x_train_weighted = x_train_gpu * weights[cp.newaxis, :]
+    
+    # Compute weighted euclidean distance (approximation to WDTW)
+    # For true WDTW, would need dynamic programming on GPU
+    diff_squared = (x_test_weighted[:, cp.newaxis, :] - x_train_weighted[cp.newaxis, :, :]) ** 2
+    distances = cp.sqrt(cp.sum(diff_squared * weights[cp.newaxis, cp.newaxis, :], axis=2))
+    
+    return distances
+
+
+def _gpu_knn_search(x_train_list, x_test_df, n_neighbors, distance='euclidean', distance_params=None):
+    """
+    GPU-accelerated KNN search using CuPy.
+    
+    Parameters
+    ----------
+    x_train_list : list of pd.DataFrame
+        Training panel data
+    x_test_df : pd.DataFrame
+        Test data (single sample)
+    n_neighbors : int
+        Number of neighbors
+    distance : str
+        Distance metric
+    distance_params : dict, optional
+        Parameters for distance (e.g., {'g': 0.05} for wdtw)
+        
+    Returns
+    -------
+    tuple
+        (indices, distances) as numpy arrays
+    """
+    # Check GPU availability dynamically
+    if cp is None:
+        raise ImportError("CuPy not available. Install with: pip install cupy-cuda11x or cupy-cuda12x")
+    
+    if not cp.is_available():
+        raise RuntimeError("CUDA device not available. Check your CUDA installation and GPU drivers.")
+    
+    # Convert to arrays and flatten time series
+    x_train_arrays = []
+    for df in x_train_list:
+        arr = df.values.flatten() if hasattr(df, 'values') else np.array(df).flatten()
+        x_train_arrays.append(arr)
+    
+    x_test_array = x_test_df.values.flatten() if hasattr(x_test_df, 'values') else np.array(x_test_df).flatten()
+    
+    # Handle variable-length sequences by padding to max length
+    max_len = max(len(arr) for arr in x_train_arrays + [x_test_array])
+    
+    # Pad all arrays to same length (pad with last value, not zeros, to preserve signal)
+    x_train_padded = []
+    for arr in x_train_arrays:
+        if len(arr) < max_len:
+            padded = np.pad(arr, (0, max_len - len(arr)), mode='edge')  # Edge padding
+        else:
+            padded = arr[:max_len]  # Truncate if longer
+        x_train_padded.append(padded)
+    
+    x_test_padded = x_test_array
+    if len(x_test_padded) < max_len:
+        x_test_padded = np.pad(x_test_padded, (0, max_len - len(x_test_padded)), mode='edge')
+    elif len(x_test_padded) > max_len:
+        x_test_padded = x_test_padded[:max_len]
+    
+    # Stack into matrices
+    x_train_matrix = np.stack(x_train_padded)  # (n_train, seq_len)
+    x_test_matrix = x_test_padded[np.newaxis, :]  # (1, seq_len)
+    
+    # Move to GPU
+    x_train_gpu = cp.asarray(x_train_matrix.astype(np.float32))
+    x_test_gpu = cp.asarray(x_test_matrix.astype(np.float32))
+    
+    # Compute distances on GPU
+    if distance == 'euclidean':
+        dist_matrix = _gpu_euclidean_distance_batch(x_test_gpu, x_train_gpu)
+    elif distance == 'wdtw':
+        g = distance_params.get('g', 0.05) if distance_params else 0.05
+        dist_matrix = _gpu_wdtw_distance_batch(x_test_gpu, x_train_gpu, g=g)
+    else:
+        # Fallback: use euclidean for unsupported metrics
+        logger.warning(f"GPU distance '{distance}' not implemented, using euclidean")
+        dist_matrix = _gpu_euclidean_distance_batch(x_test_gpu, x_train_gpu)
+    
+    # Get k nearest neighbors
+    distances_gpu = dist_matrix[0]  # First (and only) test sample
+    k = min(n_neighbors, len(x_train_arrays))
+    indices_gpu = cp.argsort(distances_gpu)[:k]
+    distances_k_gpu = distances_gpu[indices_gpu]
+    
+    # Move back to CPU
+    indices = cp.asnumpy(indices_gpu)
+    distances = cp.asnumpy(distances_k_gpu)
+    
+    return indices, distances
+
+
 def build_forecaster(n_neighbors=5, weights='uniform', distance='dtw'):
     """
     Build KNeighborsTimeSeriesRegressor with specified distance metric.
@@ -121,6 +336,9 @@ def build_forecaster(n_neighbors=5, weights='uniform', distance='dtw'):
 def similarity_search(x_train, y_train, x_test, n_neighbors=5, impl='knn', distance='dtw', **kwargs):
     """
     Run similarity search to find nearest neighbors.
+    
+    GPU acceleration is automatically used when available (CuPy installed and USE_GPU=True).
+    Set environment variable USE_GPU=false to disable.
 
     Parameters
     ----------
@@ -133,11 +351,11 @@ def similarity_search(x_train, y_train, x_test, n_neighbors=5, impl='knn', dista
     n_neighbors : int
         Number of neighbors to find
     impl : str
-        Implementation strategy ('knn' for KNeighborsTimeSeriesRegressor)
+        Implementation strategy ('knn' for KNeighborsTimeSeriesRegressor, 'gpu' for GPU-accelerated)
     distance : str
-        Distance metric ('dtw', 'euclidean', 'msm', etc.)
+        Distance metric ('dtw', 'euclidean', 'wdtw', 'msm', etc.)
     **kwargs : dict
-        Additional arguments to pass to the regressor
+        Additional arguments to pass to the regressor or GPU functions
 
     Returns
     -------
@@ -146,6 +364,23 @@ def similarity_search(x_train, y_train, x_test, n_neighbors=5, impl='knn', dista
         - neighbor_indices: list of arrays of neighbor indices for each test sample
         - neighbor_distances: list of arrays of distances for each test sample
     """
+    # Use GPU if available and enabled (check dynamically)
+    use_gpu_flag = os.getenv("USE_GPU", "true").lower() == "true"
+    gpu_actually_available = GPU_AVAILABLE  # Use the tested GPU_AVAILABLE flag
+    
+    if impl == 'gpu' or (use_gpu_flag and gpu_actually_available and impl == 'knn' and distance in ['euclidean', 'wdtw']):
+        try:
+            indices, distances = _gpu_knn_search(
+                x_train, x_test, n_neighbors, distance=distance, distance_params=kwargs
+            )
+            if impl != 'gpu':  # Only log when auto-selecting GPU
+                logger.debug(f"Using GPU acceleration for {distance} distance")
+            return indices, distances
+        except Exception as e:
+            logger.warning(f"GPU search failed, falling back to CPU: {e}")
+            # Fall through to CPU implementation
+    
+    # CPU implementation using aeon
     if impl == 'knn':
         forecaster = KNeighborsTimeSeriesRegressor(
             n_neighbors=n_neighbors,
@@ -587,6 +822,166 @@ def compute_signal_quality(
             'distance_spread': float(distance_spread)
         }
     }
+
+
+def calculate_excursion_metrics_per_neighbor(
+    neighbor_indices: np.ndarray,
+    neighbor_horizons: np.ndarray,
+    df: pd.DataFrame,
+    intervals: pd.IntervalIndex,
+    entry_price: float,
+    forecast_direction: bool
+) -> Dict[str, Any]:
+    """
+    Calculate MFE (Maximum Favorable Excursion) and MAE (Maximum Adverse Excursion)
+    for each neighbor's forecast horizon using actual OHLC data.
+    
+    This measures the potential reward vs risk for each historical similar pattern,
+    providing a better signal quality metric than just directional accuracy.
+    
+    Parameters
+    ----------
+    neighbor_indices : np.ndarray
+        Indices of neighbors in the training set
+    neighbor_horizons : np.ndarray
+        Forecast horizon returns for each neighbor (normalized, typically log_returns)
+    df : pd.DataFrame
+        Original OHLC market data with DatetimeIndex
+    intervals : pd.IntervalIndex
+        Window intervals (used to map neighbor indices to cutoff times)
+    entry_price : float
+        Entry price at forecast origin (for calculating absolute MFE/MAE)
+    forecast_direction : bool
+        True for LONG (forecast > 0), False for SHORT (forecast <= 0)
+        
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - mfe_per_neighbor: array of MFE values for each neighbor
+        - mae_per_neighbor: array of MAE values for each neighbor
+        - avg_mfe: average MFE across all neighbors
+        - avg_mae: average MAE across all neighbors
+        - e_ratio: E-Ratio = Avg_MFE / Avg_MAE (higher = better risk/reward)
+        
+    Notes
+    -----
+    For LONG trades:
+        - MFE = (Max High during horizon) - Entry Price
+        - MAE = Entry Price - (Min Low during horizon)
+    
+    For SHORT trades:
+        - MFE = Entry Price - (Min Low during horizon)
+        - MAE = (Max High during horizon) - Entry Price
+    """
+    n_neighbors = len(neighbor_indices)
+    mfe_list = []
+    mae_list = []
+    
+    for neighbor_idx in neighbor_indices:
+        try:
+            # Get the cutoff time for this neighbor
+            neighbor_cutoff = intervals[neighbor_idx].right
+            
+            # Find the position in df for this cutoff
+            cutoff_loc = df.index.get_loc(neighbor_cutoff)
+            
+            # Extract OHLC data for the forecast horizon
+            # Get horizon length from neighbor_horizons shape (assuming all neighbors have same length)
+            if neighbor_horizons.ndim > 1:
+                horizon_len = neighbor_horizons.shape[1]
+            elif len(neighbor_indices) > 0:
+                # Fallback: try to infer from first neighbor if 1D
+                horizon_len = len(neighbor_horizons) // len(neighbor_indices) if len(neighbor_indices) > 0 else len(neighbor_horizons)
+            else:
+                horizon_len = len(neighbor_horizons)
+            
+            horizon_end = min(cutoff_loc + horizon_len + 1, len(df))
+            horizon_data = df.iloc[cutoff_loc + 1:horizon_end]
+            
+            if len(horizon_data) == 0:
+                # No data available for this horizon
+                mfe_list.append(0.0)
+                mae_list.append(0.0)
+                continue
+            
+            # Extract high and low prices during horizon
+            max_high = horizon_data['high'].max()
+            min_low = horizon_data['low'].min()
+            
+            # Get entry price for this neighbor (close price at cutoff)
+            neighbor_entry = df.loc[neighbor_cutoff, 'close']
+            
+            # Calculate MFE and MAE based on trade direction
+            if forecast_direction:  # LONG
+                mfe = max_high - neighbor_entry
+                mae = neighbor_entry - min_low
+            else:  # SHORT
+                mfe = neighbor_entry - min_low
+                mae = max_high - neighbor_entry
+            
+            mfe_list.append(float(mfe))
+            mae_list.append(float(mae))
+            
+        except (KeyError, IndexError) as e:
+            # If we can't find data for this neighbor, use zeros
+            logger.debug(f"Could not calculate excursions for neighbor {neighbor_idx}: {e}")
+            mfe_list.append(0.0)
+            mae_list.append(0.0)
+    
+    mfe_per_neighbor = np.array(mfe_list)
+    mae_per_neighbor = np.array(mae_list)
+    
+    # Calculate averages
+    avg_mfe = np.mean(mfe_per_neighbor)
+    avg_mae = np.mean(mae_per_neighbor)
+    
+    # Calculate E-Ratio (avoid division by zero)
+    e_ratio = avg_mfe / avg_mae if avg_mae > 0 else 0.0
+    
+    return {
+        'mfe_per_neighbor': mfe_per_neighbor,
+        'mae_per_neighbor': mae_per_neighbor,
+        'avg_mfe': float(avg_mfe),
+        'avg_mae': float(avg_mae),
+        'e_ratio': float(e_ratio)
+    }
+
+
+def calculate_e_ratio_from_excursions(
+    mfe_values: np.ndarray,
+    mae_values: np.ndarray
+) -> float:
+    """
+    Calculate E-Ratio from arrays of MFE and MAE values.
+    
+    E-Ratio = Average(MFE) / Average(MAE)
+    
+    A high E-Ratio (> 2.0) indicates trades where potential reward significantly
+    exceeds risk, even if directional accuracy is lower.
+    
+    Parameters
+    ----------
+    mfe_values : np.ndarray
+        Array of MFE values
+    mae_values : np.ndarray
+        Array of MAE values
+        
+    Returns
+    -------
+    float
+        E-Ratio value. Returns 0.0 if avg_mae is zero or arrays are empty.
+    """
+    if len(mfe_values) == 0 or len(mae_values) == 0:
+        return 0.0
+    
+    avg_mfe = np.mean(mfe_values)
+    avg_mae = np.mean(mae_values)
+    
+    if avg_mae == 0:
+        return 0.0
+    
+    return float(avg_mfe / avg_mae)
 
 
 def dtw_tail_plus_full(x, y, *, k=40, beta=0.7, window_full=0.1, window_tail=0.05):

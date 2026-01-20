@@ -26,7 +26,8 @@ from .config import ForecastConfig
 from .costs import TransactionCosts, NO_COSTS, get_preset
 from .forecaster import (
     prepare_panel_data, similarity_search, regime_aware_similarity_search,
-    forecast_from_neighbors, score_forecast, calculate_forecast_percentiles
+    forecast_from_neighbors, score_forecast, calculate_forecast_percentiles,
+    calculate_excursion_metrics_per_neighbor
 )
 from .volatility import REGIME_NAMES, log_regime_distribution
 from .windowing import partition_sliding
@@ -63,11 +64,18 @@ class TradeResult:
     gross_pnl: float = 0.0  # P&L before costs (in return terms)
     net_pnl: float = 0.0  # P&L after costs (in return terms)
     
-    # Excursion Analysis
+    # Excursion Analysis (from actual returns - legacy)
     mfe: float = 0.0  
     mfe_bar: int = 0  
     mae_excursion: float = 0.0  
-    mae_bar: int = 0  
+    mae_bar: int = 0
+    
+    # Excursion Analysis (per-neighbor from OHLC - NEW)
+    neighbor_mfe_values: Optional[np.ndarray] = None
+    neighbor_mae_values: Optional[np.ndarray] = None
+    avg_neighbor_mfe: float = 0.0
+    avg_neighbor_mae: float = 0.0
+    e_ratio: float = 0.0  
     
     def __post_init__(self):
         """Calculate metrics after initialization."""
@@ -133,10 +141,15 @@ class BacktestResult:
     avg_coverage_80: float = 0.0
     profit_factor: float = 0.0
     
-    # Excursion Analysis
+    # Excursion Analysis (from actual returns - legacy)
     avg_mfe: float = 0.0
     avg_mae_excursion: float = 0.0
     mfe_mae_ratio: float = 0.0
+    
+    # Excursion Analysis (per-neighbor from OHLC - NEW)
+    avg_neighbor_mfe: float = 0.0
+    avg_neighbor_mae: float = 0.0
+    avg_e_ratio: float = 0.0
     
     # Performance (GROSS - before costs)
     sharpe_ratio: float = 0.0
@@ -250,10 +263,17 @@ class BacktestResult:
         net_dd = net_running_max - net_equity
         self.net_max_drawdown = np.max(net_dd) if len(net_dd) > 0 else 0.0
         
-        # Excursion
+        # Excursion (from actual returns - legacy)
         self.avg_mfe = np.mean([t.mfe for t in self.trades])
         self.avg_mae_excursion = np.mean([t.mae_excursion for t in self.trades])
         self.mfe_mae_ratio = abs(self.avg_mfe / self.avg_mae_excursion) if self.avg_mae_excursion != 0 else 0.0
+        
+        # Excursion Analysis (per-neighbor from OHLC - NEW)
+        self.avg_neighbor_mfe = np.mean([t.avg_neighbor_mfe for t in self.trades if t.avg_neighbor_mfe > 0])
+        self.avg_neighbor_mae = np.mean([t.avg_neighbor_mae for t in self.trades if t.avg_neighbor_mae > 0])
+        # Calculate average E-Ratio (weighted by trade count)
+        e_ratios = [t.e_ratio for t in self.trades if t.e_ratio > 0]
+        self.avg_e_ratio = np.mean(e_ratios) if e_ratios else 0.0
         
         # Split win rates
         longs = [t for t in self.trades if np.sum(t.forecast_returns) > 0]
@@ -317,6 +337,9 @@ class BacktestResult:
             'avg_mfe': self.avg_mfe,
             'avg_mae_excursion': self.avg_mae_excursion,
             'mfe_mae_ratio': self.mfe_mae_ratio,
+            'avg_neighbor_mfe': self.avg_neighbor_mfe,
+            'avg_neighbor_mae': self.avg_neighbor_mae,
+            'avg_e_ratio': self.avg_e_ratio,
             'sharpe_ratio': self.sharpe_ratio,
             'max_drawdown': self.max_drawdown,
             'long_win_rate': self.long_win_rate,
@@ -555,6 +578,17 @@ class Backtester:
                 cost_as_return = costs.cost_as_return(entry_price)
                 net_returns = costs.adjust_returns(y_test, entry_price)
                 
+                # Calculate Excursion Analysis (MFE/MAE per neighbor from OHLC)
+                forecast_direction = np.sum(forecast) > 0  # True = LONG, False = SHORT
+                excursion_metrics = calculate_excursion_metrics_per_neighbor(
+                    neighbor_indices=idx,
+                    neighbor_horizons=neighbor_horizons,
+                    df=df,
+                    intervals=windows,
+                    entry_price=entry_price,
+                    forecast_direction=forecast_direction
+                )
+                
                 # Record trade
                 trade = TradeResult(
                     cutoff=test_cutoff,
@@ -570,6 +604,12 @@ class Backtester:
                     transaction_cost=transaction_cost,
                     cost_as_return=cost_as_return,
                     net_returns=net_returns,
+                    # Excursion Analysis (per-neighbor)
+                    neighbor_mfe_values=excursion_metrics['mfe_per_neighbor'],
+                    neighbor_mae_values=excursion_metrics['mae_per_neighbor'],
+                    avg_neighbor_mfe=excursion_metrics['avg_mfe'],
+                    avg_neighbor_mae=excursion_metrics['avg_mae'],
+                    e_ratio=excursion_metrics['e_ratio'],
                 )
                 result.trades.append(trade)
                 
@@ -583,7 +623,8 @@ class Backtester:
         result.calculate_metrics()
         logger.info(f"Backtest complete: {result.total_trades} trades, "
                    f"Dir Acc: {result.direction_accuracy:.1%}, "
-                   f"PF: {result.profit_factor:.2f}")
+                   f"PF: {result.profit_factor:.2f}, "
+                   f"E-Ratio: {result.avg_e_ratio:.2f}")
         
         return result
 
@@ -680,3 +721,160 @@ def _check_tp_sl(actual, forecast, tp, sl):
                 return False
     
     return None
+
+
+def run_backtest(
+    signals: pd.Series,
+    returns: pd.Series,
+    prices: Optional[pd.Series] = None,
+    cost_model: Optional[TransactionCosts] = None
+) -> Dict[str, Any]:
+    """
+    Vectorized backtest function for signal-based strategies.
+    
+    Calculates strategy returns using fully vectorized operations for O(n) performance.
+    Applies lookahead protection and transaction costs.
+    
+    Parameters
+    ----------
+    signals : pd.Series
+        Trading signals (-1, 0, +1) with DatetimeIndex. 
+        Values > 0 = long, < 0 = short, 0 = flat.
+    returns : pd.Series
+        Asset returns (log or simple returns) with same index as signals.
+    prices : pd.Series, optional
+        Asset prices for cost calculation. If None, uses returns to approximate.
+        Should have same index as signals/returns.
+    cost_model : TransactionCosts, optional
+        Transaction cost model. If None, uses NO_COSTS (no costs applied).
+        
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - total_return: float - Total cumulative return
+        - sharpe: float - Annualized Sharpe ratio
+        - equity_curve: pd.Series - Cumulative equity curve
+        - strategy_returns: pd.Series - Bar-by-bar strategy returns
+        - trade_count: int - Number of trades executed
+        - turnover: float - Portfolio turnover (avg trades per period)
+        - total_costs: float - Total transaction costs in return terms
+        
+    Notes
+    -----
+    - Applies signals.shift(1) to prevent lookahead bias
+    - Detects trades using signals.diff().abs() > 0
+    - Subtracts transaction costs (commission + slippage) from returns at trade points
+    - Cost is applied as: cost_as_return = cost_model.cost_as_return(price)
+    
+    Example
+    -------
+    >>> from sim_search.costs import FUTURES_NQ
+    >>> signals = pd.Series([0, 1, 1, -1, -1, 0], index=dates)
+    >>> returns = pd.Series([0.001, 0.002, -0.001, -0.002, 0.001], index=dates)
+    >>> prices = pd.Series([100, 101, 103, 102, 100, 101], index=dates)
+    >>> result = run_backtest(signals, returns, prices, cost_model=FUTURES_NQ)
+    >>> print(f"Total return: {result['total_return']:.2%}")
+    >>> print(f"Sharpe: {result['sharpe']:.2f}")
+    """
+    if cost_model is None:
+        cost_model = NO_COSTS
+    
+    # Ensure signals and returns are aligned and have same length
+    if not signals.index.equals(returns.index):
+        # Align indices if possible
+        common_idx = signals.index.intersection(returns.index)
+        if len(common_idx) == 0:
+            raise ValueError("signals and returns must have overlapping indices")
+        signals = signals.loc[common_idx]
+        returns = returns.loc[common_idx]
+    
+    n = len(signals)
+    if n != len(returns):
+        raise ValueError(f"signals and returns must have same length: {len(signals)} vs {len(returns)}")
+    
+    # Apply lookahead protection: signal at time T affects return at T+1
+    signals_shifted = signals.shift(1)
+    
+    # Handle NaN at first row (no signal to use)
+    signals_shifted = signals_shifted.fillna(0)
+    
+    # Calculate strategy returns: position * market return
+    # signals > 0 = long, < 0 = short, 0 = flat
+    strategy_returns = signals_shifted * returns
+    
+    # Detect trades: changes in signal position
+    # signals.diff().abs() > 0 indicates a trade occurred
+    signal_changes = signals.diff().abs()
+    trade_mask = signal_changes > 0
+    
+    # Initialize cost series (will remain zeros if costs disabled or no trades)
+    cost_as_return = pd.Series(0.0, index=signals.index)
+    
+    # Calculate transaction costs
+    if cost_model.enabled and trade_mask.any():
+        # Get prices for cost calculation
+        if prices is None:
+            # Approximate prices from returns (for cost calculation only)
+            # Start with a base price of 100, then compound returns
+            base_price = 100.0
+            prices_approx = base_price * (1 + returns).cumprod()
+            prices_for_cost = prices_approx
+        else:
+            # Align prices with signals/returns
+            if not prices.index.equals(signals.index):
+                prices_for_cost = prices.reindex(signals.index).ffill().bfill()
+            else:
+                prices_for_cost = prices
+        
+        # Fully vectorized cost calculation
+        # Formula: cost_as_return = round_trip_cost / (price * point_value)
+        # Where point_value = tick_value / tick_size
+        # Rearranged: cost_as_return = (round_trip_cost / point_value) / price
+        point_value = cost_model.tick_value / cost_model.tick_size
+        cost_constant = cost_model.round_trip_cost / point_value
+        
+        # Calculate cost as return for ALL prices (fully vectorized)
+        cost_as_return_full = cost_constant / prices_for_cost
+        
+        # Only apply costs at trade points (mask non-trade points to zero)
+        cost_as_return = cost_as_return_full * trade_mask.astype(float)
+        
+        # Subtract costs from strategy returns at trade points
+        # Costs are applied when entering a position (or changing position)
+        strategy_returns = strategy_returns - cost_as_return
+    
+    # Calculate equity curve (cumulative returns)
+    equity_curve = (1 + strategy_returns).cumprod()
+    
+    # Calculate total return
+    total_return = equity_curve.iloc[-1] - 1.0
+    
+    # Calculate Sharpe ratio (annualized, assuming daily returns)
+    if len(strategy_returns) > 1:
+        mean_return = strategy_returns.mean()
+        std_return = strategy_returns.std(ddof=1)
+        if std_return > 0:
+            # Annualized Sharpe = (mean / std) * sqrt(252) for daily
+            sharpe = (mean_return / std_return) * np.sqrt(252)
+        else:
+            sharpe = 0.0
+    else:
+        sharpe = 0.0
+    
+    # Calculate trade statistics
+    trade_count = int(trade_mask.sum())
+    turnover = trade_count / n if n > 0 else 0.0
+    
+    # Total costs in return terms
+    total_costs = float(cost_as_return.sum())
+    
+    return {
+        'total_return': float(total_return),
+        'sharpe': float(sharpe),
+        'equity_curve': equity_curve,
+        'strategy_returns': strategy_returns,
+        'trade_count': trade_count,
+        'turnover': float(turnover),
+        'total_costs': float(total_costs),
+    }

@@ -15,10 +15,17 @@ dependencies = [
     "exchange-calendars>=4.11.2",
     "aeon>=1.3.0",
     "tqdm>=4.66.0",
+    "cupy-cuda12x>=13.0.0; platform_system == 'Windows'",  # GPU support (Windows)
 ]
 
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
     "notebook>=7.4.7",
+]
+gpu = [
+    # GPU support via CuPy (install manually: cupy-cuda11x or cupy-cuda12x based on your CUDA version)
+    # Example: uv pip install cupy-cuda12x  (for CUDA 12.x)
+    # Or: uv pip install cupy-cuda11x  (for CUDA 11.x)
+    # Check your CUDA version with: nvidia-smi
 ]

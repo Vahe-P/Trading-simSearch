@@ -33,18 +33,24 @@ warnings.filterwarnings('ignore')
 import os
 os.environ["LOGURU_LEVEL"] = "WARNING"
 
+# Enable GPU by default (set USE_GPU=false to disable)
+os.environ.setdefault("USE_GPU", "true")
+
 # =============================================================================
 # GRID SEARCH PARAMETERS
 # =============================================================================
 
-# Quick search (default) - fewer combinations, faster
+# Tickers to benchmark
+TICKERS = ['NQ', 'GC', 'CL', 'ES']
+
+# Quick search (default) - minimal parameters for fast testing
 PARAM_GRID_QUICK = {
-    'n_neighbors': [5, 10, 15],
-    'distance_metric': ['wdtw', 'euclidean'],
+    'n_neighbors': [5, 10],
+    'distance_metric': ['wdtw'],
     'wdtw_g': [0.05],
     'regime_filter': [True, False],
-    'calendar_filter': [True, False],
-    'norm_method': ['log_returns'],
+    'calendar_filter': [False],
+    'norm_method': ['rolling_zscore'],
     'horizon_len': [20],
 }
 
@@ -59,8 +65,9 @@ PARAM_GRID_FULL = {
     'horizon_len': [10, 20, 30],
 }
 
-# Fixed parameters (not searched)
-DATA_PATH = "data/test/NQ_2024-09-06_2025-09-13.parquet"
+# Data file pattern (will be constructed per ticker)
+# Format: data/{test|cache}/{TICKER}_{START}_{END}.parquet
+DATA_DIR_PATTERN = "data/test"  # Primary directory, fallback to cache if not found
 VOL_METHOD = "garman_klass"
 WINDOW_START = time(8, 0)
 WINDOW_END = time(9, 30)
@@ -138,12 +145,17 @@ def run_single_config(df, config, n_test_windows=15):
             if config['distance_metric'] == 'wdtw':
                 distance_params = {"g": config['wdtw_g']}
             
+            # Use GPU if available, otherwise fall back to CPU
+            from sim_search.forecaster import GPU_AVAILABLE, USE_GPU
+            use_gpu = USE_GPU and GPU_AVAILABLE
+            impl = 'gpu' if use_gpu else 'knn'
+            
             neighbor_idx, neighbor_dists = similarity_search(
                 x_train_list,
                 np.zeros(len(x_train_list)),
                 x_test_df,
                 n_neighbors=min(config['n_neighbors'], len(filtered_train)),
-                impl='knn',
+                impl=impl,
                 distance=config['distance_metric'],
                 distance_params=distance_params
             )
@@ -181,6 +193,56 @@ def run_single_config(df, config, n_test_windows=15):
     }
 
 
+def get_data_path_for_ticker(ticker: str) -> str:
+    """
+    Construct data file path for a ticker.
+    Tries test directory first, then cache directory.
+    
+    Parameters
+    ----------
+    ticker : str
+        Ticker symbol (e.g., 'NQ', 'GC', 'CL', 'ES')
+        
+    Returns
+    -------
+    str
+        Path to data file, or None if not found
+        
+    Note
+    ----
+    For now, assumes files follow pattern: {TICKER}_YYYY-MM-DD_YYYY-MM-DD.parquet
+    If files don't exist, will attempt to find them in test/ or cache/ directories.
+    """
+    from pathlib import Path
+    
+    # Try common date patterns first
+    date_patterns = [
+        "2024-09-06_2025-09-13",  # Current NQ file pattern
+        "2024-06-01_2024-09-01",  # Common pattern in cache
+    ]
+    
+    # Try test directory first
+    for date_pattern in date_patterns:
+        test_path = Path(f"data/test/{ticker}_{date_pattern}.parquet")
+        if test_path.exists():
+            return str(test_path)
+        
+        cache_path = Path(f"data/cache/{ticker}_{date_pattern}.parquet")
+        if cache_path.exists():
+            return str(cache_path)
+    
+    # Fallback: try to find any file matching ticker in test or cache
+    for base_dir in ["data/test", "data/cache"]:
+        base_path = Path(base_dir)
+        if base_path.exists():
+            matches = list(base_path.glob(f"{ticker}_*.parquet"))
+            if matches:
+                return str(matches[0])
+    
+    # If no file found, return None (caller should handle this)
+    return None
+
+
 def generate_param_combinations(param_grid):
     """Generate all valid parameter combinations."""
     combinations = []
@@ -211,15 +273,11 @@ def main():
     print("\n" + "="*80)
     print(f" GRID SEARCH - Parameter Optimization ({mode.upper()} mode)")
     print("="*80)
-    
-    # Load data
-    print(f"\n[DATA] Loading from {DATA_PATH}...")
-    df = pd.read_parquet(DATA_PATH)
-    print(f"   Total bars: {len(df):,}")
+    print(f"\n[TICKERS] Running benchmark on: {', '.join(TICKERS)}")
     
     # Generate parameter combinations
     combinations = generate_param_combinations(param_grid)
-    print(f"\n[GRID] Testing {len(combinations)} parameter combinations")
+    print(f"\n[GRID] Testing {len(combinations)} parameter combinations per ticker")
     print(f"[GRID] Walk-forward validation with {n_test_windows} test windows each")
     
     # Print search space
@@ -227,32 +285,57 @@ def main():
     for key, values in param_grid.items():
         print(f"      {key}: {values}")
     
-    # Estimate time
-    est_time = len(combinations) * n_test_windows * 0.3  # ~0.3s per test
-    print(f"\n   Estimated time: ~{est_time/60:.1f} minutes")
+    # Estimate time (per ticker)
+    est_time_per_ticker = len(combinations) * n_test_windows * 0.3  # ~0.3s per test
+    est_time_total = est_time_per_ticker * len(TICKERS)
+    print(f"\n   Estimated time per ticker: ~{est_time_per_ticker/60:.1f} minutes")
+    print(f"   Estimated total time: ~{est_time_total/60:.1f} minutes")
     
-    # Run grid search
-    print("\n" + "-"*80)
+    # Run grid search for each ticker
+    print("\n" + "="*80)
     print(" RUNNING GRID SEARCH")
-    print("-"*80)
+    print("="*80)
     
     all_results = []
     
-    for i, config in enumerate(combinations):
-        pct = (i + 1) / len(combinations) * 100
-        config_str = f"k={config['n_neighbors']}, dist={config['distance_metric']}, reg={'Y' if config['regime_filter'] else 'N'}, cal={'Y' if config['calendar_filter'] else 'N'}"
-        print(f"\n   [{i+1:3d}/{len(combinations)}] ({pct:5.1f}%) {config_str}", end="", flush=True)
+    for ticker_idx, ticker in enumerate(TICKERS):
+        print(f"\n{'='*80}")
+        print(f" TICKER: {ticker} ({ticker_idx + 1}/{len(TICKERS)})")
+        print(f"{'='*80}")
         
-        metrics = run_single_config(df, config, n_test_windows=n_test_windows)
-        
-        if metrics is None:
-            print(f" -> SKIP")
+        # Get data path for this ticker
+        data_path = get_data_path_for_ticker(ticker)
+        if data_path is None:
+            print(f"   [SKIP] Data file not found for {ticker}, skipping...")
             continue
         
-        result = {**config, **metrics}
-        all_results.append(result)
+        print(f"\n[DATA] Loading from {data_path}...")
+        try:
+            df = pd.read_parquet(data_path)
+            print(f"   Total bars: {len(df):,}")
+        except Exception as e:
+            print(f"   [ERROR] Failed to load data: {e}")
+            continue
         
-        print(f" -> DirAcc: {metrics['direction_accuracy']:.0%}, RMSE: {metrics['avg_rmse']:.6f}")
+        # Run grid search for this ticker
+        for i, config in enumerate(combinations):
+            pct = (i + 1) / len(combinations) * 100
+            config_str = f"k={config['n_neighbors']}, dist={config['distance_metric']}, reg={'Y' if config['regime_filter'] else 'N'}, cal={'Y' if config['calendar_filter'] else 'N'}, norm={config['norm_method']}"
+            print(f"\n   [{i+1:3d}/{len(combinations)}] ({pct:5.1f}%) {config_str}", end="", flush=True)
+            
+            metrics = run_single_config(df, config, n_test_windows=n_test_windows)
+            
+            if metrics is None:
+                print(f" -> SKIP")
+                continue
+            
+            result = {**config, **metrics, 'ticker': ticker}
+            all_results.append(result)
+            
+            e_ratio_str = ""
+            if 'avg_e_ratio' in metrics and metrics['avg_e_ratio'] > 0:
+                e_ratio_str = f", E-Ratio: {metrics['avg_e_ratio']:.2f}"
+            print(f" -> DirAcc: {metrics['direction_accuracy']:.0%}, RMSE: {metrics['avg_rmse']:.6f}{e_ratio_str}")
     
     # Convert to DataFrame
     results_df = pd.DataFrame(all_results)
@@ -265,6 +348,18 @@ def main():
     output_file = "grid_search_results.csv"
     results_df.to_csv(output_file, index=False)
     print(f"\n\n[SAVE] Results saved to {output_file}")
+    
+    # Print summary by ticker
+    print("\n" + "="*80)
+    print(" SUMMARY BY TICKER")
+    print("="*80)
+    for ticker in TICKERS:
+        ticker_results = results_df[results_df['ticker'] == ticker]
+        if len(ticker_results) > 0:
+            best_ticker = ticker_results.loc[ticker_results['direction_accuracy'].idxmax()]
+            print(f"\n   {ticker}: Best Dir Acc = {best_ticker['direction_accuracy']:.1%} "
+                  f"(k={int(best_ticker['n_neighbors'])}, dist={best_ticker['distance_metric']}, "
+                  f"reg={'Y' if best_ticker['regime_filter'] else 'N'})")
     
     # =========================================================================
     # ANALYSIS
@@ -292,8 +387,8 @@ def main():
    +--------------------------------------------------------------------------+
 """)
     
-    # Parameter impact analysis
-    print("\n   PARAMETER IMPACT ANALYSIS:")
+    # Parameter impact analysis (aggregated across all tickers)
+    print("\n   PARAMETER IMPACT ANALYSIS (Aggregated):")
     print("   " + "-"*74)
     
     # By distance metric
@@ -308,6 +403,11 @@ def main():
         subset = results_df[results_df['regime_filter'] == enabled]
         label = "ENABLED" if enabled else "DISABLED"
         print(f"      {label:12s}: Dir Acc = {subset['direction_accuracy'].mean():.1%}, RMSE = {subset['avg_rmse'].mean():.6f}")
+        # Show breakdown by ticker
+        for ticker in TICKERS:
+            ticker_subset = subset[subset['ticker'] == ticker]
+            if len(ticker_subset) > 0:
+                print(f"        {ticker}: Dir Acc = {ticker_subset['direction_accuracy'].mean():.1%}")
     
     # By calendar filter
     print("\n   By Calendar Filter:")
@@ -328,14 +428,16 @@ def main():
     print("="*80)
     
     top5 = results_df.nlargest(5, 'direction_accuracy')
-    print("\n   +-----+-------+----------+-------+-------+--------+--------+")
-    print("   |  #  |   K   | Distance | Reg   | Cal   | DirAcc | RMSE   |")
-    print("   +-----+-------+----------+-------+-------+--------+--------+")
+    print("\n   +-----+-------+----------+-------+-------+--------+--------+----------+")
+    print("   |  #  |   K   | Distance | Reg   | Cal   | DirAcc | RMSE   | E-Ratio  |")
+    print("   +-----+-------+----------+-------+-------+--------+--------+----------+")
     
     for i, (_, row) in enumerate(top5.iterrows()):
         reg_str = "Y" if row['regime_filter'] else "N"
         cal_str = "Y" if row['calendar_filter'] else "N"
-        print(f"   | {i+1:3d} | {int(row['n_neighbors']):5d} | {row['distance_metric']:8s} | {reg_str:5s} | {cal_str:5s} | {row['direction_accuracy']:.0%}    | {row['avg_rmse']:.4f} |")
+        e_ratio_val = row.get('avg_e_ratio', 0.0)
+        e_ratio_str = f"{e_ratio_val:.2f}" if e_ratio_val > 0 else "N/A"
+        print(f"   | {i+1:3d} | {int(row['n_neighbors']):5d} | {row['distance_metric']:8s} | {reg_str:5s} | {cal_str:5s} | {row['direction_accuracy']:.0%}    | {row['avg_rmse']:.4f} | {e_ratio_str:8s} |")
     
     print("   +-----+-------+----------+-------+-------+--------+--------+")
     

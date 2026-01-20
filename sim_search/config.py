@@ -5,6 +5,11 @@ from typing import Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Window generation strategy
+# True = Sliding mode: Create windows at every timestamp (step_size=1)
+# False = Anchored mode: Create windows only at market open each day (step_size=bars_per_day)
+SLIDING_WINDOW_MODE: bool = True
+
 
 class ForecastConfig(BaseSettings):
     model_config = SettingsConfigDict(

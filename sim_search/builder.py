@@ -32,6 +32,7 @@ from .volatility import (
     classify_all_regimes,
 )
 from .calendar_events import enrich_collection_with_calendar
+from .config import SLIDING_WINDOW_MODE
 
 
 class WindowCollectionBuilder:
@@ -97,20 +98,35 @@ class WindowCollectionBuilder:
     
     def with_sliding_windows(self,
                              window_len: int = 60,
-                             step_size: int = 1,
+                             step_size: Optional[int] = None,
                              max_windows: Optional[int] = None) -> 'WindowCollectionBuilder':
         """
         Use sliding windows with configurable step size.
+        
+        The step_size is automatically determined by SLIDING_WINDOW_MODE config:
+        - True (Sliding): step_size = 1 (window for every timestamp)
+        - False (Anchored): step_size = bars_per_day (windows only at market open)
         
         Parameters
         ----------
         window_len : int
             Number of bars per window
-        step_size : int
-            Bars to advance between windows (1 = fully overlapping)
+        step_size : int, optional
+            Bars to advance between windows. If None, determined by SLIDING_WINDOW_MODE.
+            If provided, overrides the config setting.
         max_windows : int, optional
             Maximum windows to create
         """
+        # Determine step_size based on config if not explicitly provided
+        if step_size is None:
+            if SLIDING_WINDOW_MODE:
+                # Sliding mode: every bar (every minute)
+                step_size = 1
+            else:
+                # Anchored mode: only market open (bars per day)
+                step_size = self._calculate_bars_per_day()
+                logger.info(f"Anchored mode: using step_size={step_size} (bars per day)")
+        
         self.intervals = partition_sliding(
             self.df,
             window_len=window_len,
@@ -118,8 +134,36 @@ class WindowCollectionBuilder:
             horizon_len=self.horizon_len,
             max_windows=max_windows
         )
-        logger.info(f"Created {len(self.intervals)} sliding windows")
+        logger.info(f"Created {len(self.intervals)} sliding windows (step_size={step_size})")
         return self
+    
+    def _calculate_bars_per_day(self) -> int:
+        """
+        Calculate average number of bars per trading day.
+        
+        This is used for anchored mode to ensure windows only start
+        at market open (approximately once per day).
+        
+        Returns
+        -------
+        int
+            Average bars per day (rounded)
+        """
+        if len(self.df) == 0:
+            return 390  # Default for minute bars (6.5 hours * 60 minutes)
+        
+        # Get unique trading days
+        dates = pd.to_datetime(self.df.index.date).unique()
+        n_days = len(dates)
+        
+        if n_days == 0:
+            return 390
+        
+        # Calculate average bars per day
+        bars_per_day = len(self.df) / n_days
+        
+        # Round to nearest integer
+        return int(round(bars_per_day))
     
     def with_horizon(self, horizon_len: int) -> 'WindowCollectionBuilder':
         """Set forecast horizon length."""

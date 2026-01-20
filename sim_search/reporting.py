@@ -79,6 +79,9 @@ def export_trades_detail(
             'mfe_bar': trade.mfe_bar,
             'mae_excursion': trade.mae_excursion,
             'mae_bar': trade.mae_bar,
+            'avg_neighbor_mfe': trade.avg_neighbor_mfe,
+            'avg_neighbor_mae': trade.avg_neighbor_mae,
+            'e_ratio': trade.e_ratio,
             'cum_return': np.sum(trade.actual_returns),
             'avg_neighbor_distance': np.mean(trade.neighbor_distances),
         })
@@ -121,6 +124,7 @@ def export_comparison_report(
         'symbol', 'total_trades', 'direction_accuracy', 'hit_ratio', 'profit_factor',
         'sharpe_ratio', 'max_drawdown', 'expectancy', 
         'avg_mfe', 'avg_mae_excursion', 'mfe_mae_ratio',
+        'avg_neighbor_mfe', 'avg_neighbor_mae', 'avg_e_ratio',
         'long_win_rate', 'short_win_rate', 'avg_win', 'avg_loss'
     ]
     
