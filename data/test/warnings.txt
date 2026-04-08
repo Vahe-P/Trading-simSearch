@@ -1,0 +1,10 @@
+Quality warnings
+2017-11-13 (degraded)
+2018-10-21 (degraded)
+2019-01-15 (degraded)
+2019-02-22 (degraded)
+2020-02-27 (degraded)
+2020-02-28 (degraded)
+2020-07-01 (degraded)
+2021-12-05 (degraded)
+2022-01-02 (degraded)

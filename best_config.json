@@ -1,0 +1,14 @@
+{
+  "n_neighbors": 5,
+  "distance_metric": "wdtw",
+  "wdtw_g": 0.01,
+  "regime_filter": true,
+  "calendar_filter": true,
+  "norm_method": "log_returns",
+  "horizon_len": 20,
+  "metrics": {
+    "direction_accuracy": 0.6551724137931034,
+    "avg_rmse": 0.00020763291299287097,
+    "avg_r2": -3.9846419700976714
+  }
+}

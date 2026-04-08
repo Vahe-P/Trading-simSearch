@@ -1,0 +1,8 @@
+C:\Users\jkosk\dev\tahoma-scan\tahoma_scan\data\databento.py:116: BentoWarning: The streaming request contained one or more days which have reduced quality: 2017-11-13 (degraded). See: https://databento.com/docs/api-reference-historical/metadata/metadata-get-dataset-condition
+  raw = global_db_client.timeseries.get_range(
+C:\Users\jkosk\dev\tahoma-scan\tahoma_scan\data\databento.py:116: BentoWarning: The streaming request contained one or more days which have reduced quality: 2018-10-21 (degraded), 2019-01-15 (degraded), 2019-02-22 (degraded)... See: https://databento.com/docs/api-reference-historical/metadata/metadata-get-dataset-condition
+  raw = global_db_client.timeseries.get_range(
+C:\Users\jkosk\dev\tahoma-scan\tahoma_scan\data\databento.py:116: BentoWarning: The streaming request contained one or more days which have reduced quality: 2020-02-27 (degraded), 2020-02-28 (degraded), 2020-07-01 (degraded). See: https://databento.com/docs/api-reference-historical/metadata/metadata-get-dataset-condition
+  raw = global_db_client.timeseries.get_range(
+C:\Users\jkosk\dev\tahoma-scan\tahoma_scan\data\databento.py:116: BentoWarning: The streaming request contained one or more days which have reduced quality: 2021-12-05 (degraded), 2022-01-02 (degraded). See: https://databento.com/docs/api-reference-historical/metadata/metadata-get-dataset-condition
+  raw = global_db_client.timeseries.get_range(
